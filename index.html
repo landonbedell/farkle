@@ -261,7 +261,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 15;   // bump together with CACHE in sw.js
+const APP_VERSION = 16;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -794,13 +794,17 @@ const SFX = {
   },
   // A solid dice hit: bright snap + dry clack + a quick low knock underneath for weight.
   knock(v, t, clackF, bodyF, bodyD) {
-    burst({ t, a: .0005, d: .004, v: v * .35, type: 'highpass', f: 5000 });           // snap (tiny, so it doesn't hiss)
-    burst({ t, a: .0005, d: .024, v: v * .5, f: clackF, q: 1.3 });                     // clack
-    const ping = clackF * rand(1.35, 1.6);
-    tone(ping, { t, a: .0008, d: .045, v: v * .2 });                                   // high "tink" of hard plastic
-    tone(ping * 2.3, { t, a: .0008, d: .02, v: v * .07 });                             // brighter overtone
-    tone(bodyF, { t, a: .001, d: bodyD, v: v * .42, to: bodyF * .45 });               // weight
-    burst({ t, a: .001, d: bodyD * .8, v: v * .22, type: 'lowpass', f: 420 });        // a little table thump
+    const hitOnce = (t, v) => {
+      burst({ t, a: .0005, d: .005, v: v * .45, type: 'highpass', f: 4000 });         // snap
+      burst({ t, a: .0005, d: .018, v: v * .55, f: clackF * 1.25, q: 2 });            // clack
+      const p = rand(4200, 5200);                                                      // dense cluster of short, inharmonic
+      [[1, .018, .1], [1.47, .012, .07], [2.09, .008, .05]].forEach(([m, d, a]) =>    // partials: hard resin, not wood
+        tone(p * m, { t, a: .0005, d, v: v * a }));
+    };
+    hitOnce(t, v);
+    hitOnce(t + rand(.003, .007), v * .35);                                            // tiny bounce chatter
+    tone(bodyF * .7, { t, a: .001, d: bodyD * .6, v: v * .3, to: bodyF * .35 });      // weight
+    burst({ t, a: .001, d: bodyD * .7, v: v * .25, type: 'lowpass', f: 350 });        // thump
   },
   rattle() {                                        // dice shaken in a hand: tight clusters of knocks
     if (!audioOn()) return;
@@ -814,8 +818,7 @@ const SFX = {
   },
   pick(on) {
     if (!audioOn()) return;
-    if (on) { tone(740, { d: .09, v: .2, to: 1180 }); burst({ d: .015, v: .12, f: 5000, q: 3 }); }
-    else tone(620, { d: .08, v: .15, to: 400 });
+    burst({ a: .0008, d: .035, v: on ? .22 : .17, f: on ? rand(2500, 2900) : rand(1600, 1900), q: 1.4 });   // a plain click
   },
   sparkle(level) {                                  // 1: a set, 2: 1,000+
     if (!audioOn()) return;
@@ -841,11 +844,11 @@ const SFX = {
       drive.curve = satCurve(); drive.oversample = '2x';
       lp.type = 'lowpass'; lp.Q.value = 7;
       lp.frequency.setValueAtTime(350, T);
-      lp.frequency.linearRampToValueAtTime(1700, T + .07);
+      lp.frequency.linearRampToValueAtTime(1700, T + .13);
       lp.frequency.exponentialRampToValueAtTime(320, T + d);
       drive.connect(lp).connect(g);
       const lfo = actx.createOscillator(), lg = actx.createGain();
-      lfo.frequency.value = 5.5;
+      lfo.frequency.value = 4.5;
       lg.gain.setValueAtTime(vib ? 0 : 1.5, T);
       if (vib) lg.gain.linearRampToValueAtTime(f2 * .04, T + d);
       lfo.connect(lg);
@@ -872,8 +875,8 @@ const SFX = {
     tone(130, { t: land, a: .001, d: .35, v: .55, to: 42 });                             // boom
     burst({ t: land, a: .001, d: .3, v: .4, type: 'lowpass', f: 180 });                // thud
     burst({ t: land + .005, a: .002, d: .9, v: .14, type: 'highpass', f: 4500, send: .9 }); // crash shimmer
-    womp(196, 185, land + .3, .3);
-    womp(175, 110, land + .66, .95, true);
+    womp(196, 185, land + .35, .45);
+    womp(147, 98, land + .92, 1.25, true);
   },
   hot() {
     if (!audioOn()) return;
