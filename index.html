@@ -230,6 +230,7 @@
   .reset { width: 100%; height: 44px; color: var(--muted); font-size: 14px; font-weight: 600; }
   .setup-foot { position: sticky; bottom: 0; padding: 16px 0 calc(16px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, var(--bg) 30%); }
   .setup-foot button + button { margin-top: 8px; }
+  .ver { text-align: center; color: var(--muted); font-size: 12px; margin-top: 12px; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -260,6 +261,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
+const APP_VERSION = 13;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -625,21 +627,22 @@ function throwDice(fl) {
   });
   frames.push(sims.map(d => ({ x: d.x, y: d.y, z: 0, R: d.R.slice() })));
   ui.sim = sims;
-  ui.play = { frames, hits, hi: 0 };
+  const P = ui.play = { frames, hits, hi: 0 };
   applyLabels();
   ui.anim = true; ui.t0 = performance.now();
   SFX.rattle();
-  requestAnimationFrame(tick);
+  requestAnimationFrame(now => tick(now, P));
 }
-function tick(now) {
-  if (!ui.anim) return;
-  const P = ui.play, t = (now - ui.t0) / 1000;
+function tick(now, P) {
+  if (!ui.anim || ui.play !== P) return;             // a newer throw (or undo) took over
+  // the frame timestamp can be slightly earlier than t0, so never index below frame 0
+  const t = Math.max(0, (now - ui.t0) / 1000);
   const fi = Math.min(P.frames.length - 1, Math.floor(t * 60));
   P.frames[fi].forEach((f, i) => { const d = ui.sim[i]; d.x = f.x; d.y = f.y; d.z = f.z; d.R = f.R; });
   while (P.hi < P.hits.length && P.hits[P.hi].t <= t) { const h = P.hits[P.hi++]; SFX.hit(h.v, h.k); }
   draw();
   if (fi === P.frames.length - 1) { ui.anim = false; ui.play = null; settleRoll(); }
-  else requestAnimationFrame(tick);
+  else requestAnimationFrame(n => tick(n, P));
 }
 function physics(sims, h, t, hits) {
   const { W, H, S } = TABLE, r = S * .72;
@@ -873,6 +876,7 @@ function render() {
   }
   if (ui.bump) { const t = app.querySelector('.total'); t && t.classList.add('bump'); ui.bump = false; }
   if (state.screen === 'game' && state.mode === 'roll') mountTable();
+  if (state.screen === 'setup') showCacheStatus();
 }
 
 function setupView() {
@@ -933,8 +937,22 @@ function setupView() {
       ${hasGame ? `<button class="wide primary press" data-a="resume">Resume game</button>
                    <button class="wide secondary press" data-a="start">Start new game</button>`
                 : `<button class="wide primary press" data-a="start">Start game</button>`}
+      <div class="ver">Version ${APP_VERSION}<span class="ver-cache"></span></div>
     </div>
   </div>`;
+}
+
+// Shows whether the offline copy saved on this device matches the version running.
+async function showCacheStatus() {
+  const el = app.querySelector('.ver-cache');
+  if (!el || !('caches' in window) || !navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+  try {
+    const saved = (await caches.keys()).map(k => +(k.match(/^farkle-v(\d+)$/) || [])[1]).filter(Boolean);
+    const newest = Math.max(0, ...saved);
+    el.textContent = newest === APP_VERSION ? ' · saved for offline ✓'
+      : newest > APP_VERSION ? ` · v${newest} downloaded, reopen the app to use it`
+      : newest ? ` · offline copy is v${newest}, updating…` : ' · saving for offline…';
+  } catch (e) {}
 }
 
 function gameView() {
@@ -1195,6 +1213,8 @@ render();
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => setTimeout(showCacheStatus, 300));
+  navigator.serviceWorker.ready.then(() => setTimeout(showCacheStatus, 300));
 }
 </script>
 </body>
