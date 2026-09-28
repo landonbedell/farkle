@@ -261,7 +261,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 16;   // bump together with CACHE in sw.js
+const APP_VERSION = 17;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -819,6 +819,8 @@ const SFX = {
   pick(on) {
     if (!audioOn()) return;
     burst({ a: .0008, d: .035, v: on ? .22 : .17, f: on ? rand(2500, 2900) : rand(1600, 1900), q: 1.4 });   // a plain click
+    tone(on ? 170 : 140, { a: .001, d: .045, v: .2, to: on ? 80 : 65 });                                  // with some weight under it
+    burst({ a: .001, d: .03, v: .12, type: 'lowpass', f: 320 });
   },
   sparkle(level) {                                  // 1: a set, 2: 1,000+
     if (!audioOn()) return;
@@ -870,11 +872,15 @@ const SFX = {
     };
     const land = .12;                               // when the FARKLE text finishes slamming down
     burst({ a: land - .01, d: .03, v: .16, f: 900, q: .8 });                           // whoosh as it drops in
-    burst({ t: land, a: .0005, d: .05, v: .6, type: 'highpass', f: 1200 });            // crack
-    burst({ t: land, a: .0005, d: .09, v: .45, f: 1800, q: .6 });                       // slap
-    tone(130, { t: land, a: .001, d: .35, v: .55, to: 42 });                             // boom
-    burst({ t: land, a: .001, d: .3, v: .4, type: 'lowpass', f: 180 });                // thud
-    burst({ t: land + .005, a: .002, d: .9, v: .14, type: 'highpass', f: 4500, send: .9 }); // crash shimmer
+    // slap: a short, mid-heavy smack (like a hand on a table) rather than a hissy snare
+    const smack = (t, v) => {
+      burst({ t, a: .0003, d: .028, v: v * .75, f: 1100, q: .9, send: .35 });         // the smack
+      burst({ t, a: .0003, d: .008, v: v * .3, type: 'highpass', f: 2500 });           // skin snap, kept very short
+    };
+    smack(land, 1);
+    smack(land + .009, .4);                                                            // second contact of a flat hand
+    tone(110, { t: land, a: .001, d: .24, v: .6, to: 45 });                              // boom
+    burst({ t: land, a: .001, d: .18, v: .45, type: 'lowpass', f: 200 });              // thud
     womp(196, 185, land + .35, .45);
     womp(147, 98, land + .92, 1.25, true);
   },
