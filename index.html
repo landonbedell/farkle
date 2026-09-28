@@ -261,7 +261,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 14;   // bump together with CACHE in sw.js
+const APP_VERSION = 15;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -771,6 +771,14 @@ function burst({ t = 0, a = .002, d = .05, v = .3, type = 'bandpass', f = 2000, 
   if (send) { const sg = actx.createGain(); sg.gain.value = send; g.connect(sg); sg.connect(verb); }
   src.start(T, Math.random() * .5); src.stop(T + a + d + .05);
 }
+let satCurveCache = null;
+function satCurve() {                               // soft-clip curve for warm distortion
+  if (!satCurveCache) {
+    satCurveCache = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) { const x = i / 511.5 - 1; satCurveCache[i] = Math.tanh(2.5 * x) / Math.tanh(2.5); }
+  }
+  return satCurveCache;
+}
 function bell(f, t, v = .18, d = 1.1) {             // soft bell: a few partials plus some room
   tone(f, { t, v, d, send: .6 });
   tone(f * 2.01, { t, v: v * .35, d: d * .6, send: .6 });
@@ -825,19 +833,37 @@ const SFX = {
   },
   farkle() {                                        // womp womp
     if (!audioOn()) return;
-    const womp = (f1, f2, t, d) => {
-      const T = actx.currentTime + t, g = envGain(T, .02, .2, d), lp = actx.createBiquadFilter();
-      const oscs = [actx.createOscillator(), actx.createOscillator()], lfo = actx.createOscillator(), lg = actx.createGain();
-      lp.type = 'lowpass'; lp.Q.value = 4;
-      lp.frequency.setValueAtTime(1100, T); lp.frequency.exponentialRampToValueAtTime(300, T + d);
-      lfo.frequency.value = 6; lg.gain.value = 5; lfo.connect(lg);
-      oscs.forEach((o, i) => {
-        o.type = 'sawtooth'; o.detune.value = i * 12;
-        o.frequency.setValueAtTime(f1, T); o.frequency.exponentialRampToValueAtTime(f2, T + d);
-        lg.connect(o.frequency); o.connect(lp);
-      });
-      lp.connect(g);
-      [...oscs, lfo].forEach(o => { o.start(T); o.stop(T + d + .1); });
+    // A muted-trombone "womp": detuned saws + a square an octave down, driven for grit,
+    // through a resonant filter that opens then closes (the "wah"), plus a clean sub underneath.
+    const womp = (f1, f2, t, d, vib) => {
+      const T = actx.currentTime + t, g = envGain(T, .015, .3, d);
+      const drive = actx.createWaveShaper(), lp = actx.createBiquadFilter();
+      drive.curve = satCurve(); drive.oversample = '2x';
+      lp.type = 'lowpass'; lp.Q.value = 7;
+      lp.frequency.setValueAtTime(350, T);
+      lp.frequency.linearRampToValueAtTime(1700, T + .07);
+      lp.frequency.exponentialRampToValueAtTime(320, T + d);
+      drive.connect(lp).connect(g);
+      const lfo = actx.createOscillator(), lg = actx.createGain();
+      lfo.frequency.value = 5.5;
+      lg.gain.setValueAtTime(vib ? 0 : 1.5, T);
+      if (vib) lg.gain.linearRampToValueAtTime(f2 * .04, T + d);
+      lfo.connect(lg);
+      const voice = (type, mult, detune, dest, level) => {
+        const o = actx.createOscillator(), vg = actx.createGain();
+        o.type = type; o.detune.value = detune; vg.gain.value = level;
+        o.frequency.setValueAtTime(f1 * mult, T);
+        o.frequency.exponentialRampToValueAtTime(f2 * mult, T + d);
+        lg.connect(o.frequency);
+        o.connect(vg).connect(dest);
+        o.start(T); o.stop(T + d + .1);
+      };
+      voice('sawtooth', 1, -10, drive, .5);
+      voice('sawtooth', 1, 10, drive, .5);
+      voice('square', .5, 0, drive, .35);           // grit an octave down
+      voice('sine', .5, 0, g, .9);                   // clean sub, skips the filter
+      lfo.start(T); lfo.stop(T + d + .1);
+      burst({ t, a: .01, d: d * .5, v: .05, f: 700, q: .5 });                          // breathy onset
     };
     const land = .12;                               // when the FARKLE text finishes slamming down
     burst({ a: land - .01, d: .03, v: .16, f: 900, q: .8 });                           // whoosh as it drops in
@@ -846,8 +872,8 @@ const SFX = {
     tone(130, { t: land, a: .001, d: .35, v: .55, to: 42 });                             // boom
     burst({ t: land, a: .001, d: .3, v: .4, type: 'lowpass', f: 180 });                // thud
     burst({ t: land + .005, a: .002, d: .9, v: .14, type: 'highpass', f: 4500, send: .9 }); // crash shimmer
-    womp(247, 233, land + .3, .28);
-    womp(220, 147, land + .62, .7);
+    womp(196, 185, land + .3, .3);
+    womp(175, 110, land + .66, .95, true);
   },
   hot() {
     if (!audioOn()) return;
