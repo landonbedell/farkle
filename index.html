@@ -129,7 +129,7 @@
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.05), inset 0 10px 30px rgba(0,0,0,.35); }
   .table.shake { animation: shake .45s ease; }
   @keyframes shake { 20% { transform: translateX(-8px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(3px); } }
-  .d3, .dsh { position: absolute; left: 0; top: 0; width: var(--S, 56px); height: var(--S, 56px); will-change: transform; pointer-events: none; }
+  .d3, .dsh, .dao { position: absolute; left: 0; top: 0; width: var(--S, 56px); height: var(--S, 56px); will-change: transform; pointer-events: none; }
   .d3 { transform-style: preserve-3d; }
   .d3 .face, .d3 .core { position: absolute; inset: 0; border-radius: 17%; }
   .d3 .face { overflow: hidden; -webkit-backface-visibility: hidden; backface-visibility: hidden; }
@@ -147,8 +147,8 @@
   .d3 .core.cy { transform: rotateX(90deg) scale(.96); }
   .d3.sel .face .b { fill: #fff3cf; stroke: var(--gold); stroke-width: 14; }
   /* tight dark contact shadow right under the die + a soft wider shadow cast away from the light */
-  .dsh { border-radius: 26%; background: rgba(0,0,0,.55); filter: blur(1.5px);
-    box-shadow: 0 0 3px 1px rgba(0,0,0,.45), calc(var(--S) * .1) calc(var(--S) * .17) calc(var(--S) * .3) calc(var(--S) * .06) rgba(0,0,0,.4); }
+  .dsh { border-radius: 26%; background: rgba(0,0,0,.6); filter: blur(6px); }
+  .dao { border-radius: 24%; background: rgba(0,0,0,.7); filter: blur(2.5px); }
   .table-hint { position: absolute; left: 0; right: 0; top: 12px; z-index: 2; text-align: center; color: rgba(255,255,255,.72); font-size: 14px; font-weight: 600; pointer-events: none; }
   .table-hint span { display: inline-block; padding: 5px 12px; border-radius: 999px; background: rgba(6,16,11,.6); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
   .table-hint.ready { top: 34%; font-size: 17px; color: rgba(255,255,255,.72); animation: nudge 1.6s ease-in-out infinite; }
@@ -270,7 +270,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 19;   // bump together with CACHE in sw.js
+const APP_VERSION = 20;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -710,9 +710,9 @@ function physics(sims, h, t, hits) {
 }
 function draw() {
   if (!ui.sim) return;
-  const els = app.querySelectorAll('.d3'), shs = app.querySelectorAll('.dsh'), S = TABLE.S;
+  const els = app.querySelectorAll('.d3'), shs = app.querySelectorAll('.dsh'), aos = app.querySelectorAll('.dao'), S = TABLE.S;
   ui.sim.forEach((d, i) => {
-    const el = els[i], sh = shs[i];
+    const el = els[i], sh = shs[i], ao = aos[i];
     if (!el) return;
     const R = d.R, z = d.z + (el.classList.contains('sel') ? S * .22 : 0);
     el.style.transform = `translate3d(${d.x - S / 2}px,${d.y - S / 2}px,${z + S / 2}px) matrix3d(${R[0]},${R[3]},${R[6]},0,${R[1]},${R[4]},${R[7]},0,${R[2]},${R[5]},${R[8]},0,0,0,0,1)`;
@@ -721,8 +721,15 @@ function draw() {
       const n = applyM(R, NORMALS[j]);
       lits[j].style.opacity = clamp((.86 - (n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2])) * .6, 0, .55).toFixed(3);
     }
-    sh.style.transform = `translate3d(${d.x - S / 2 + 1.5 + z * .35}px,${d.y - S / 2 + 3 + z * .6}px,0) rotate(${Math.atan2(R[3], R[0])}rad) scale(${.97 + z / 400})`;
-    sh.style.opacity = clamp(.55 - z / 250, .12, .55);
+    // Light comes from the upper left, so even a resting cube casts its shadow down and to the right;
+    // it slides further out and softens as the die rises. A tight contact shadow sits right at the base.
+    const yaw = Math.atan2(R[3], R[0]), x0 = d.x - S / 2, y0 = d.y - S / 2;
+    sh.style.transform = `translate3d(${x0 + S * .2 + z * .35}px,${y0 + S * .32 + z * .6}px,0) rotate(${yaw}rad) scale(${1 + z / 400})`;
+    sh.style.opacity = clamp(.5 - z / 300, .15, .5);
+    if (ao) {
+      ao.style.transform = `translate3d(${x0}px,${y0 + S * .04}px,0) rotate(${yaw}rad) scale(1.05)`;
+      ao.style.opacity = clamp(.65 - z / 40, 0, .65);
+    }
   });
 }
 
@@ -1091,7 +1098,7 @@ function tableView() {
   return `
     <div class="table">
       ${hint}
-      ${R.dice.map(() => '<div class="dsh"></div>').join('')}
+      ${R.dice.map(() => '<div class="dsh"></div><div class="dao"></div>').join('')}
       ${R.dice.map((d, i) => {
         const L = ui.sim && ui.sim.length === R.dice.length ? ui.sim[i].labels : BASE;
         return `<div class="d3 ${d.sel ? 'sel' : ''}"><i class="core"></i><i class="core cx"></i><i class="core cy"></i>${
