@@ -1,6 +1,8 @@
-// Caches the app so it works with no internet after the first visit.
-const CACHE = 'farkle-v11';
+// Keeps the app working with no internet. Online, it always loads the newest version
+// (and refreshes the saved copy); offline or on a slow connection, it uses the saved copy.
+const CACHE = 'farkle-v12';
 const FILES = ['./', './index.html', './manifest.json', './icon-180.png', './icon-512.png'];
+const NETWORK_TIMEOUT = 2500;
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)));
@@ -13,5 +15,20 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  e.respondWith(caches.match(e.request, { ignoreSearch: true }).then(r => r || fetch(e.request)));
+  if (e.request.method !== 'GET') return;
+  e.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    const fromNetwork = fetch(e.request, { cache: 'no-cache' }).then(res => {
+      if (res.ok) cache.put(e.request, res.clone());
+      return res;
+    });
+    fromNetwork.catch(() => {});
+    const timeout = new Promise(resolve => setTimeout(resolve, NETWORK_TIMEOUT));
+    try {
+      const res = await Promise.race([fromNetwork, timeout]);
+      if (res) return res;
+    } catch (err) { /* offline */ }
+    const saved = await cache.match(e.request, { ignoreSearch: true });
+    return saved || fromNetwork;
+  })());
 });
