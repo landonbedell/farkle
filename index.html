@@ -124,13 +124,23 @@
 
   /* ---------- Dice table ---------- */
   .table { position: relative; margin-top: 10px; border-radius: 20px; overflow: hidden; touch-action: none; min-height: 260px;
+    perspective: 1300px; perspective-origin: 50% 45%; --h: 28px;
     background: radial-gradient(120% 90% at 50% 35%, #1f4434 0%, #15301f 55%, #0f2318 100%);
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.05), inset 0 10px 30px rgba(0,0,0,.35); }
   .table.shake { animation: shake .45s ease; }
   @keyframes shake { 20% { transform: translateX(-8px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(3px); } }
   .d3, .dsh { position: absolute; left: 0; top: 0; width: var(--S, 56px); height: var(--S, 56px); will-change: transform; pointer-events: none; }
-  .d3 svg { width: 100%; height: 100%; }
-  .d3.sel .die .b { fill: #fff1c9; stroke: var(--gold); stroke-width: 7; }
+  .d3 { transform-style: preserve-3d; }
+  .d3 .face, .d3 .core { position: absolute; inset: 0; border-radius: 17%; }
+  .d3 .face { overflow: hidden; -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+  .d3 .face svg { display: block; width: 100%; height: 100%; }
+  .d3 .face .b { fill: var(--die); }
+  .d3 .face .p { fill: var(--pip); }
+  .d3 .lit { position: absolute; inset: 0; background: #000; opacity: 0; }
+  .d3 .core { background: #cbc3b1; transform: scale(.96); }
+  .d3 .core.cx { transform: rotateY(90deg) scale(.96); }
+  .d3 .core.cy { transform: rotateX(90deg) scale(.96); }
+  .d3.sel .face .b { fill: #fff3cf; stroke: var(--gold); stroke-width: 14; }
   .dsh { border-radius: 26%; background: rgba(0,0,0,.5); filter: blur(4px); }
   .table-hint { position: absolute; left: 0; right: 0; top: 12px; z-index: 2; text-align: center; color: rgba(255,255,255,.72); font-size: 14px; font-weight: 600; pointer-events: none; }
   .table-hint span { display: inline-block; padding: 5px 12px; border-radius: 999px; background: rgba(6,16,11,.6); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
@@ -469,10 +479,70 @@ function setMode(m) {
 }
 
 /* ---------- Dice mode: physics ---------- */
-// Top-down 2D rigid bodies with a fake height (z) for hops; faces flip as dice tumble.
+// Dice are CSS 3D cubes. Each throw is simulated up front (top-down motion + height + full 3D
+// orientation), then the cube's faces are labelled so the pre-decided number lands on top,
+// and the recording is played back. Fair result, physically consistent tumble.
 const TABLE = { W: 300, H: 400, S: 56 };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const GRAV = 2400;
+const GRAV = 2400, SIM_DT = 1 / 120;
+const NORMALS = [[0, 0, 1], [0, 0, -1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]];
+const BASE = [1, 6, 2, 5, 3, 4];                    // label per normal; opposite faces add up to 7
+const FACE_TF = ['', 'rotateY(180deg)', 'rotateY(90deg)', 'rotateY(-90deg)', 'rotateX(-90deg)', 'rotateX(90deg)'];
+const LIGHT = (() => { const v = [-.35, -.55, 1], l = Math.hypot(...v); return v.map(x => x / l); })();
+const faceSvg = f => `<svg viewBox="0 0 100 100"><rect class="b" width="100" height="100"/>${PIPS[f].map(([x, y]) => `<circle class="p" cx="${x}" cy="${y}" r="10"/>`).join('')}</svg>`;
+
+// 3x3 rotation matrices, row-major
+const mmul = (a, b) => { const o = new Array(9); for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) o[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]; return o; };
+const applyM = (M, n) => [M[0] * n[0] + M[1] * n[1] + M[2] * n[2], M[3] * n[0] + M[4] * n[1] + M[5] * n[2], M[6] * n[0] + M[7] * n[1] + M[8] * n[2]];
+function axisAngle(x, y, z, a) {
+  const c = Math.cos(a), s = Math.sin(a), t = 1 - c;
+  return [t * x * x + c, t * x * y - s * z, t * x * z + s * y, t * x * y + s * z, t * y * y + c, t * y * z - s * x, t * x * z - s * y, t * y * z + s * x, t * z * z + c];
+}
+function rotW(R, wx, wy, wz, h) {                   // rotate by world angular velocity w over time h
+  const w = Math.hypot(wx, wy, wz);
+  return w < 1e-6 ? R : mmul(axisAngle(wx / w, wy / w, wz / w, w * h), R);
+}
+function ortho(R) {                                 // re-orthonormalize (Gram-Schmidt on columns)
+  let ax = R[0], ay = R[3], az = R[6], l = Math.hypot(ax, ay, az); ax /= l; ay /= l; az /= l;
+  let bx = R[1], by = R[4], bz = R[7]; const d = ax * bx + ay * by + az * bz;
+  bx -= d * ax; by -= d * ay; bz -= d * az; l = Math.hypot(bx, by, bz); bx /= l; by /= l; bz /= l;
+  return [ax, bx, ay * bz - az * by, ay, by, az * bx - ax * bz, az, bz, ax * by - ay * bx];
+}
+function between(a, b) {                            // cube rotation taking axis a onto axis b
+  const d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  if (d > .99) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  if (d < -.99) { const u = Math.abs(a[0]) < .5 ? [1, 0, 0] : [0, 1, 0]; return axisAngle(u[0], u[1], u[2], Math.PI); }
+  const c = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  return axisAngle(c[0], c[1], c[2], Math.PI / 2);
+}
+function upIndex(R) {                               // which body normal points most toward the viewer
+  let k = 0, best = 0;
+  for (let c = 0; c < 3; c++) if (Math.abs(R[6 + c]) > Math.abs(best)) { best = R[6 + c]; k = c; }
+  return k === 2 ? (best > 0 ? 0 : 1) : k === 0 ? (best > 0 ? 2 : 3) : (best > 0 ? 4 : 5);
+}
+function labelsFor(upIdx, value) {                  // rotate the standard layout so `value` sits on normal upIdx
+  const M = between(NORMALS[BASE.indexOf(value)], NORMALS[upIdx]), labels = new Array(6);
+  NORMALS.forEach((n, i) => {
+    const m = applyM(M, n).map(Math.round);
+    labels[NORMALS.findIndex(q => q[0] === m[0] && q[1] === m[1] && q[2] === m[2])] = BASE[i];
+  });
+  return labels;
+}
+function alignStep(d, maxAng) {                     // tip the die toward lying flat; returns remaining angle
+  let col = 0;
+  for (let c = 1; c < 3; c++) if (Math.abs(d.R[6 + c]) > Math.abs(d.R[6 + col])) col = c;
+  const sg = d.R[6 + col] > 0 ? 1 : -1;
+  const ax = sg * d.R[col], ay = sg * d.R[3 + col], az = sg * d.R[6 + col];
+  const sn = Math.hypot(ax, ay), ang = Math.atan2(sn, az);
+  if (ang < 1e-4) return 0;
+  const step = Math.min(ang, maxAng);
+  d.R = mmul(axisAngle(ay / sn, -ax / sn, 0, step), d.R);
+  return ang - step;
+}
+function staticDie(x, y, f, yaw) {
+  return { x, y, z: 0, vx: 0, vy: 0, vz: 0, va: 0, w: [0, 0, 0], done: true, lc: -1, labels: BASE.slice(),
+    R: mmul(axisAngle(0, 0, 1, yaw), between(NORMALS[BASE.indexOf(f)], [0, 0, 1])) };
+}
 
 function sizeTable() {
   const t = app.querySelector('.table'), sp = app.querySelector('.spacer');
@@ -481,21 +551,26 @@ function sizeTable() {
   const h = Math.max(260, window.innerHeight - top - sp.offsetHeight);
   t.style.height = h + 'px';
   TABLE.W = t.clientWidth; TABLE.H = h;
-  TABLE.S = Math.round(clamp(TABLE.W / 6.3, 44, 60));
+  TABLE.S = Math.round(clamp(TABLE.W / 7.2, 42, 54));
   t.style.setProperty('--S', TABLE.S + 'px');
+  t.style.setProperty('--h', TABLE.S / 2 + 'px');
 }
 function layoutDice(kind) {
   const n = state.roll.dice.length, { W, H, S } = TABLE;
   ui.sim = state.roll.dice.map((d, i) => {
-    let x, y, a;
     if (kind === 'hand') {
-      const gap = Math.min(S * 1.2, (W - S * 1.2) / Math.max(1, n - 1));
-      x = W / 2 + (i - (n - 1) / 2) * gap; y = H - S * .95; a = ((i * 37) % 7 - 3) * .04;
-    } else {
-      const cols = 3, gx = W / (cols + 1), gy = S * 1.7;
-      x = gx * (1 + i % cols); y = H * .45 + (Math.floor(i / cols) - .5) * gy; a = ((i * 53) % 9 - 4) * .12;
+      const perRow = Math.ceil(n / 2), row = i < perRow ? 0 : 1, inRow = row ? n - perRow : perRow, col = row ? i - perRow : i;
+      const gap = S * 1.4;
+      return staticDie(W / 2 + (col - (inRow - 1) / 2) * gap + (row ? S * .3 : 0), H - S * (1 + row * 1.35), d.f, ((i * 37) % 7 - 3) * .07);
     }
-    return { x, y, a, z: 0, vx: 0, vy: 0, vz: 0, va: 0, dist: 0, air: 0, shown: d.f, final: d.f, done: true, lc: 0 };
+    const cols = 3, gx = W / (cols + 1), gy = S * 1.8;
+    return staticDie(gx * (1 + i % cols), H * .45 + (Math.floor(i / cols) - .5) * gy, d.f, ((i * 53) % 9 - 4) * .12);
+  });
+}
+function applyLabels() {
+  app.querySelectorAll('.d3').forEach((el, i) => {
+    const L = ui.sim[i] && ui.sim[i].labels;
+    if (L) el.querySelectorAll('.face').forEach((f, j) => { f.innerHTML = faceSvg(L[j]) + '<i class="lit"></i>'; });
   });
 }
 function mountTable() {
@@ -503,7 +578,8 @@ function mountTable() {
   const R = state.roll;
   if (!ui.anim) {
     if (R.phase === 'ready' || !ui.sim || ui.sim.length !== R.dice.length) layoutDice(R.phase === 'ready' ? 'hand' : 'scatter');
-    else ui.sim.forEach(d => { d.x = clamp(d.x, TABLE.S / 2, TABLE.W - TABLE.S / 2); d.y = clamp(d.y, TABLE.S / 2, TABLE.H - TABLE.S / 2); });
+    else { const m = TABLE.S * .72; ui.sim.forEach(d => { d.x = clamp(d.x, m, TABLE.W - m); d.y = clamp(d.y, m, TABLE.H - m); }); }
+    applyLabels();
   }
   draw();
 }
@@ -515,67 +591,84 @@ function throwDice(fl) {
   const sp = Math.hypot(vx, vy) || 1, target = clamp(sp * 1.1, 1300, 3400);
   vx *= target / sp; vy *= target / sp;
   ox = clamp(ox, S, W - S); oy = clamp(oy, S, H - S * .6);
-  ui.sim = state.roll.dice.map((d, i) => ({
-    x: clamp(ox + (i - (n - 1) / 2) * S * .55 + (rnd() - .5) * S * .4, S / 2, W - S / 2),
-    y: clamp(oy + (rnd() - .5) * S * .6, S / 2, H - S / 2),
-    a: rnd() * 6.283, z: 20 + rnd() * 30, vz: 250 + rnd() * 450,
-    vx: vx * (.8 + rnd() * .4) + (rnd() - .5) * 300, vy: vy * (.8 + rnd() * .4) + (rnd() - .5) * 200,
-    va: (rnd() - .5) * 28, dist: 0, air: 0, shown: rnd6(), final: d.f, done: false, lc: 0,
-  }));
-  ui.anim = true; ui.t0 = ui.last = performance.now();
+  const unit = () => { const v = [rnd() - .5, rnd() - .5, rnd() - .5], l = Math.hypot(...v) || 1; return v.map(c => c / l); };
+  const sims = state.roll.dice.map((d, i) => {
+    const q = unit(), w = unit(), wm = 12 + rnd() * 14;
+    return {
+      x: clamp(ox + (i - (n - 1) / 2) * S * .55 + (rnd() - .5) * S * .4, S * .72, W - S * .72),
+      y: clamp(oy + (rnd() - .5) * S * .6, S * .72, H - S * .72),
+      z: 20 + rnd() * 30, vz: 250 + rnd() * 450,
+      vx: vx * (.8 + rnd() * .4) + (rnd() - .5) * 300, vy: vy * (.8 + rnd() * .4) + (rnd() - .5) * 200,
+      va: (rnd() - .5) * 16, w: w.map(c => c * wm), R: axisAngle(q[0], q[1], q[2], rnd() * 6.283),
+      labels: BASE.slice(), done: false, lc: -1,
+    };
+  });
+  // Simulate the whole throw now, recording 60 fps frames and collision sounds.
+  const frames = [], hits = [];
+  let t = 0;
+  for (let k = 0; k < 720 && !sims.every(d => d.done); k++) {
+    physics(sims, SIM_DT, t, hits); t += SIM_DT;
+    if (k % 2) frames.push(sims.map(d => ({ x: d.x, y: d.y, z: d.z, R: d.R.slice() })));
+  }
+  sims.forEach((d, i) => {
+    alignStep(d, 9); d.R = ortho(d.R); d.z = 0; d.done = true;
+    d.labels = labelsFor(upIndex(d.R), state.roll.dice[i].f);
+  });
+  frames.push(sims.map(d => ({ x: d.x, y: d.y, z: 0, R: d.R.slice() })));
+  ui.sim = sims;
+  ui.play = { frames, hits, hi: 0 };
+  applyLabels();
+  ui.anim = true; ui.t0 = performance.now();
   clack(.5);
-  draw(); requestAnimationFrame(tick);
+  requestAnimationFrame(tick);
 }
 function tick(now) {
   if (!ui.anim) return;
-  const dt = Math.min(.034, (now - ui.last) / 1000); ui.last = now;
-  for (let k = 0; k < 4; k++) physics(dt / 4);
+  const P = ui.play, t = (now - ui.t0) / 1000;
+  const fi = Math.min(P.frames.length - 1, Math.floor(t * 60));
+  P.frames[fi].forEach((f, i) => { const d = ui.sim[i]; d.x = f.x; d.y = f.y; d.z = f.z; d.R = f.R; });
+  while (P.hi < P.hits.length && P.hits[P.hi].t <= t) clack(P.hits[P.hi++].v);
   draw();
-  if (ui.sim.every(d => d.done) || now - ui.t0 > 6000) {
-    ui.anim = false;
-    ui.sim.forEach(d => { d.done = true; d.vx = d.vy = d.va = d.vz = d.z = 0; d.shown = d.final; });
-    settleRoll();
-  } else requestAnimationFrame(tick);
+  if (fi === P.frames.length - 1) { ui.anim = false; ui.play = null; settleRoll(); }
+  else requestAnimationFrame(tick);
 }
-function flip(d, sp) {
-  if (sp < 260 && d.z < 8) { d.shown = d.final; return; }
-  let f; do f = rnd6(); while (f === d.shown);
-  d.shown = f;
-}
-function hit(d, v) {
-  const now = performance.now();
-  if (now - d.lc > 60) { d.lc = now; clack(v); }
-}
-function physics(h) {
-  const { W, H, S } = TABLE, r = S / 2, sims = ui.sim, step = S * .8;
+function physics(sims, h, t, hits) {
+  const { W, H, S } = TABLE, r = S * .72;
+  const hit = (d, v) => { if (v > .04 && t - d.lc > .06) { d.lc = t; hits.push({ t, v }); } };
   for (const d of sims) {
     if (d.done) continue;
     let sp = Math.hypot(d.vx, d.vy);
-    if (d.z > 0 || d.vz > 0) {                       // airborne: hop and tumble
-      d.vz -= GRAV * h; d.z += d.vz * h; d.air += h;
-      if (d.air > .06) { d.air = 0; flip(d, sp); }
+    if (d.z > 0 || d.vz > 0) {                       // airborne: free tumble
+      d.vz -= GRAV * h; d.z += d.vz * h;
+      d.R = rotW(d.R, d.w[0], d.w[1], d.w[2] + d.va, h);
       if (d.z <= 0) {
         d.z = 0;
         const imp = -d.vz;
-        if (imp > 120) { d.vz = imp * .35; d.va += (rnd() - .5) * imp * .02; flip(d, sp); hit(d, imp / 700); }
-        else d.vz = 0;
+        if (imp > 120) {
+          d.vz = imp * .35;
+          const m = imp * .025;
+          d.w = d.w.map(c => c * .5 + (rnd() - .5) * m);
+          hit(d, imp / 700);
+        } else d.vz = 0;
       }
-    } else {                                         // on the felt: friction, rolling over edges
+    } else {                                         // on the felt: slide, roll, then tip flat
       const dec = Math.min(sp, (500 + sp * 1.6) * h);
       if (sp > 0) { d.vx -= d.vx / sp * dec; d.vy -= d.vy / sp * dec; }
       d.va *= Math.exp(-5 * h);
-      d.dist += sp * h;
-      if (d.dist > step) { d.dist -= step; flip(d, sp); }
       sp = Math.hypot(d.vx, d.vy);
-      if (sp < 5 && Math.abs(d.va) < .5) { d.vx = d.vy = d.va = 0; d.done = true; d.shown = d.final; }
+      const roll = .35 * Math.min(1, sp / 220) / r;
+      d.R = rotW(d.R, -d.vy * roll, d.vx * roll, d.va, h);
+      const rem = sp < 260 ? alignStep(d, (3 + 10 * (1 - sp / 260)) * h) : 1;
+      if (sp < 5 && Math.abs(d.va) < .5 && rem < .003) { alignStep(d, 1); d.vx = d.vy = d.va = 0; d.done = true; }
     }
-    d.x += d.vx * h; d.y += d.vy * h; d.a += d.va * h;
+    d.R = ortho(d.R);
+    d.x += d.vx * h; d.y += d.vy * h;
     if (d.x < r)     { d.x = r;     if (d.vx < 0) { hit(d, -d.vx / 1400); d.vx = -d.vx * .5; d.va += d.vy * .006; } }
     if (d.x > W - r) { d.x = W - r; if (d.vx > 0) { hit(d,  d.vx / 1400); d.vx = -d.vx * .5; d.va -= d.vy * .006; } }
     if (d.y < r)     { d.y = r;     if (d.vy < 0) { hit(d, -d.vy / 1400); d.vy = -d.vy * .5; d.va -= d.vx * .006; } }
     if (d.y > H - r) { d.y = H - r; if (d.vy > 0) { hit(d,  d.vy / 1400); d.vy = -d.vy * .5; d.va += d.vx * .006; } }
   }
-  const minD = S * 1.08;                             // dice vs dice, treated as circles
+  const minD = S * 1.12;                             // dice vs dice, treated as circles
   for (let i = 0; i < sims.length; i++) for (let j = i + 1; j < sims.length; j++) {
     const A = sims[i], B = sims[j];
     if (A.done && B.done) continue;
@@ -596,20 +689,19 @@ function physics(h) {
 }
 function draw() {
   if (!ui.sim) return;
-  const els = app.querySelectorAll('.d3'), shs = app.querySelectorAll('.dsh'), S = TABLE.S, step = S * .8;
+  const els = app.querySelectorAll('.d3'), shs = app.querySelectorAll('.dsh'), S = TABLE.S;
   ui.sim.forEach((d, i) => {
     const el = els[i], sh = shs[i];
     if (!el) return;
-    const sp = Math.hypot(d.vx, d.vy);
-    let tf = `translate3d(${d.x - S / 2}px,${d.y - S / 2}px,0) `;
-    if (!d.done && d.z === 0 && sp > 40) {          // squash along the direction of travel as it rolls over
-      const dir = Math.atan2(d.vy, d.vx), k = 1 - .25 * Math.abs(Math.cos(Math.PI * d.dist / step));
-      tf += `rotate(${dir}rad) scaleX(${k}) rotate(${d.a - dir}rad)`;
-    } else tf += `rotate(${d.a}rad) scale(${1 + d.z / 260})`;
-    el.style.transform = tf;
-    if (+el.dataset.f !== d.shown) { el.innerHTML = die(d.shown); el.dataset.f = d.shown; }
-    sh.style.transform = `translate3d(${d.x - S / 2 + 3 + d.z * .35}px,${d.y - S / 2 + 5 + d.z * .6}px,0) rotate(${d.a}rad) scale(${.92 + d.z / 400})`;
-    sh.style.opacity = clamp(.55 - d.z / 250, .12, .55);
+    const R = d.R, z = d.z + (el.classList.contains('sel') ? S * .22 : 0);
+    el.style.transform = `translate3d(${d.x - S / 2}px,${d.y - S / 2}px,${z + S / 2}px) matrix3d(${R[0]},${R[3]},${R[6]},0,${R[1]},${R[4]},${R[7]},0,${R[2]},${R[5]},${R[8]},0,0,0,0,1)`;
+    const lits = el.querySelectorAll('.lit');
+    for (let j = 0; j < 6 && lits[j]; j++) {        // simple directional lighting per face
+      const n = applyM(R, NORMALS[j]);
+      lits[j].style.opacity = clamp((.86 - (n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2])) * .6, 0, .55).toFixed(3);
+    }
+    sh.style.transform = `translate3d(${d.x - S / 2 + 4 + z * .35}px,${d.y - S / 2 + 7 + z * .6}px,0) rotate(${Math.atan2(R[3], R[0])}rad) scale(${.95 + z / 400})`;
+    sh.style.opacity = clamp(.55 - z / 250, .12, .55);
   });
 }
 
@@ -793,8 +885,9 @@ function tableView() {
       ${hint}
       ${R.dice.map(() => '<div class="dsh"></div>').join('')}
       ${R.dice.map((d, i) => {
-        const f = R.phase === 'rolling' && ui.sim && ui.sim[i] ? ui.sim[i].shown : d.f;
-        return `<div class="d3 ${d.sel ? 'sel' : ''}" data-f="${f}">${die(f)}</div>`;
+        const L = ui.sim && ui.sim.length === R.dice.length ? ui.sim[i].labels : BASE;
+        return `<div class="d3 ${d.sel ? 'sel' : ''}"><i class="core"></i><i class="core cx"></i><i class="core cy"></i>${
+          L.map((f, j) => `<div class="face" style="transform:${FACE_TF[j]} translateZ(var(--h))">${faceSvg(f)}<i class="lit"></i></div>`).join('')}</div>`;
       }).join('')}
       ${R.phase === 'farkle' ? '<div class="farkle-msg">Farkle!<small>No scoring dice</small></div>' : ''}
     </div>`;
