@@ -1,5 +1,5 @@
 // Caches the app so it works with no internet after the first visit.
-const CACHE = 'farkle-v8';
+const CACHE = 'farkle-v9';
 const FILES = ['./', './index.html', './manifest.json', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

@@ -122,6 +122,29 @@
   .bank { background: var(--green); color: #052414; }
   .bank:disabled { background: var(--surface-3); color: var(--muted); opacity: 1; }
 
+  /* ---------- Dice table ---------- */
+  .table { position: relative; margin-top: 10px; border-radius: 20px; overflow: hidden; touch-action: none; min-height: 260px;
+    background: radial-gradient(120% 90% at 50% 35%, #1f4434 0%, #15301f 55%, #0f2318 100%);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.05), inset 0 10px 30px rgba(0,0,0,.35); }
+  .table.shake { animation: shake .45s ease; }
+  @keyframes shake { 20% { transform: translateX(-8px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(3px); } }
+  .d3, .dsh { position: absolute; left: 0; top: 0; width: var(--S, 56px); height: var(--S, 56px); will-change: transform; pointer-events: none; }
+  .d3 svg { width: 100%; height: 100%; }
+  .d3.sel .die .b { fill: #fff1c9; stroke: var(--gold); stroke-width: 7; }
+  .dsh { border-radius: 26%; background: rgba(0,0,0,.5); filter: blur(4px); }
+  .table-hint { position: absolute; left: 0; right: 0; top: 12px; z-index: 2; text-align: center; color: rgba(255,255,255,.72); font-size: 14px; font-weight: 600; pointer-events: none; }
+  .table-hint span { display: inline-block; padding: 5px 12px; border-radius: 999px; background: rgba(6,16,11,.6); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  .table-hint.ready { top: 34%; font-size: 17px; color: rgba(255,255,255,.72); animation: nudge 1.6s ease-in-out infinite; }
+  .table-hint svg { width: 28px; height: 28px; margin: 0 auto 6px; }
+  @keyframes nudge { 50% { transform: translateY(-8px); } }
+  .farkle-msg { position: absolute; left: 0; right: 0; top: 30%; text-align: center; font-size: 56px; font-weight: 900; color: var(--red);
+    letter-spacing: -1px; text-shadow: 0 6px 24px rgba(0,0,0,.5); pointer-events: none; animation: slam .35s cubic-bezier(.2,.9,.3,1.3); }
+  .farkle-msg small { display: block; font-size: 15px; font-weight: 600; color: rgba(255,255,255,.7); letter-spacing: 0; }
+  @keyframes slam { from { transform: scale(1.8); opacity: 0; } }
+  .rollbtn { background: var(--gold); color: #2a1f02; }
+  .rollbtn:disabled { background: var(--surface-3); color: var(--muted); opacity: 1; }
+  span.chip { pointer-events: none; }
+
   /* ---------- Feedback ---------- */
   .float { position: fixed; z-index: 30; pointer-events: none; font-weight: 800; font-size: 20px; color: var(--gold);
     transform: translate(-50%, 0); animation: floatUp .65s ease-out forwards; text-shadow: 0 2px 8px rgba(0,0,0,.5); }
@@ -243,8 +266,14 @@ const ico = {
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   plus: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1Z"/><path d="m16 10-4 4M12 10l4 4"/></svg>',
+  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   keypad: '<svg class="kp-ico" viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="5" r="1.8"/><circle cx="12" cy="5" r="1.8"/><circle cx="18" cy="5" r="1.8"/><circle cx="6" cy="11" r="1.8"/><circle cx="12" cy="11" r="1.8"/><circle cx="18" cy="11" r="1.8"/><circle cx="6" cy="17" r="1.8"/><circle cx="12" cy="17" r="1.8"/><circle cx="18" cy="17" r="1.8"/><circle cx="12" cy="22" r="1.4" opacity=".001"/></svg>',
 };
+
+/* ---------- Randomness (fair dice) ---------- */
+const rnd = () => { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] / 4294967296; };
+const rnd6 = () => 1 + Math.floor(rnd() * 6);
+const newRoll = () => ({ phase: 'ready', farkle: false, dice: Array.from({ length: 6 }, () => ({ f: rnd6(), sel: false })) });
 
 /* ---------- State ---------- */
 function defaults() {
@@ -252,13 +281,20 @@ function defaults() {
     screen: 'setup', draft: ['', ''], players: [], current: 0, turn: [], round: 1,
     target: 10000, minOpen: 0, pts: Object.fromEntries(RULES.map(r => [r.id, r.pts])),
     finalBy: null, over: false, undo: [],
+    mode: 'buttons', sound: true, roll: newRoll(),   // mode: 'buttons' (real dice) | 'roll' (roll in the app)
   };
 }
 let state = load() || defaults();
-const ui = { sheet: null, bump: false };   // not persisted
+const ui = { sheet: null, bump: false, sim: null, anim: false };   // not persisted
 
 function load() {
-  try { const s = JSON.parse(localStorage.getItem(KEY)); return s ? { ...defaults(), ...s } : null; } catch (e) { return null; }
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (!s) return null;
+    // closed mid-throw: the result was already decided, so just show it
+    if (s.roll && s.roll.phase === 'rolling') s.roll.phase = s.roll.farkle ? 'farkle' : 'rolled';
+    return { ...defaults(), ...s };
+  } catch (e) { return null; }
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
 function snap() {
@@ -294,7 +330,8 @@ function startGame(keepPlayers) {
   const names = keepPlayers ? state.players.map(p => p.name) : state.draft.map(n => n.trim()).filter(Boolean);
   if (!names.length) { toast('Add at least one player', 'bad'); return; }
   Object.assign(state, { players: names.map(name => ({ name, score: 0 })), current: 0, turn: [], round: 1,
-    finalBy: null, over: false, undo: [], screen: 'game' });
+    finalBy: null, over: false, undo: [], screen: 'game', roll: newRoll() });
+  ui.sim = null;
   commit(); window.scrollTo(0, 0);
 }
 function addScore(label, pts, faces) {
@@ -305,16 +342,24 @@ function addScore(label, pts, faces) {
 }
 function nextPlayer() {
   state.turn = [];
+  state.roll = newRoll(); ui.sim = null;
   const next = (state.current + 1) % state.players.length;
   if (state.finalBy !== null && next === state.finalBy) { state.over = true; return; }
   if (next === 0) state.round++;
   state.current = next;
 }
 function bank() {
-  const p = state.players[state.current], t = turnTotal();
+  const p = state.players[state.current], R = state.roll, sel = rollSel();
+  if (state.mode === 'roll') {
+    if (R.phase === 'rolling' || R.phase === 'farkle') return;
+    if (R.phase === 'rolled' && !sel) { toast('Tap the scoring dice you want to keep', 'bad'); return; }
+    if (sel && !sel.valid) { toast('Only keep dice that score', 'bad'); return; }
+  }
+  const t = turnTotal() + (sel ? sel.pts : 0);
   if (t <= 0) return;
   if (p.score === 0 && t < state.minOpen) { toast(`Need ${fmt(state.minOpen)} to get on the board`, 'bad'); return; }
   snap();
+  if (sel) state.turn.push({ label: 'Kept', pts: sel.pts, faces: sel.faces });
   p.score += t;
   if (state.finalBy === null && p.score >= state.target) {
     state.finalBy = state.current;
@@ -336,7 +381,263 @@ function doUndo() {
   if (!s) return;
   const u = state.undo;
   state = { ...JSON.parse(s), undo: u };
+  ui.sim = null;
   toast('Undone'); commit();
+}
+
+/* ---------- Dice mode: scoring ---------- */
+// Best score for a set of kept dice, or -Infinity if any die doesn't score.
+function scoreDice(faces) {
+  const P = state.pts, memo = new Map();
+  const c0 = [0, 0, 0, 0, 0, 0, 0]; faces.forEach(f => c0[f]++);
+  function best(c) {
+    const key = c.join();
+    if (memo.has(key)) return memo.get(key);
+    const n = c.reduce((a, b) => a + b, 0);
+    if (!n) return 0;
+    let m = -Infinity;
+    if (n === 6) {
+      const v = c.slice(1);
+      if (v.every(x => x === 1)) m = Math.max(m, P.str);
+      if (v.filter(x => x === 2).length === 3) m = Math.max(m, P.pr3);
+      if (v.filter(x => x === 3).length === 2) m = Math.max(m, P.tt);
+      if (v.includes(4) && v.includes(2)) m = Math.max(m, P.k4p);
+    }
+    for (let f = 1; f <= 6; f++) for (let k = 3; k <= c[f]; k++) {
+      const d = c.slice(); d[f] -= k;
+      m = Math.max(m, (k === 3 ? P['t' + f] : P['k' + k]) + best(d));
+    }
+    for (const f of [1, 5]) if (c[f]) { const d = c.slice(); d[f]--; m = Math.max(m, P[f === 1 ? 'one1' : 'one5'] + best(d)); }
+    memo.set(key, m);
+    return m;
+  }
+  return best(c0);
+}
+function hasScore(faces) {
+  const c = [0, 0, 0, 0, 0, 0, 0]; faces.forEach(f => c[f]++);
+  return c[1] > 0 || c[5] > 0 || Math.max(...c) >= 3 || (faces.length === 6 && c.filter(x => x === 2).length === 3);
+}
+function rollSel() {
+  const R = state.roll;
+  if (state.mode !== 'roll' || R.phase !== 'rolled') return null;
+  const faces = R.dice.filter(d => d.sel).map(d => d.f).sort((a, b) => a - b);
+  if (!faces.length) return null;
+  const pts = scoreDice(faces);
+  return { faces, pts: pts > 0 ? pts : 0, valid: pts > 0 };
+}
+
+/* ---------- Dice mode: turn flow ---------- */
+function rollDice(flick) {
+  const R = state.roll;
+  if (R.phase === 'rolling' || R.phase === 'farkle') return;
+  let sel = null;
+  if (R.phase === 'rolled') {
+    sel = rollSel();
+    if (!sel) { toast('Tap a scoring die to keep first', 'bad'); return; }
+    if (!sel.valid) { toast('Only keep dice that score', 'bad'); return; }
+  }
+  snap();
+  if (sel) {
+    state.turn.push({ label: 'Kept', pts: sel.pts, faces: sel.faces });
+    R.dice = R.dice.filter(d => !d.sel);
+    ui.bump = true;
+    if (!R.dice.length) { R.dice = newRoll().dice; toast('🔥 Hot dice! Rolling all 6', 'good'); }
+  }
+  R.dice.forEach(d => { d.f = rnd6(); d.sel = false; });   // result is decided now; the animation just reveals it
+  R.farkle = !hasScore(R.dice.map(d => d.f));
+  R.phase = 'rolling';
+  commit();
+  throwDice(flick);
+}
+function settleRoll() {
+  const R = state.roll;
+  R.phase = R.farkle ? 'farkle' : 'rolled';
+  commit();
+  if (R.farkle) { const t = app.querySelector('.table'); t && t.classList.add('shake'); buzz([30, 40, 30]); }
+}
+function toggleHold(i) {
+  const d = state.roll.dice[i];
+  d.sel = !d.sel;
+  clack(.3); buzz(6);
+  commit();
+}
+function setMode(m) {
+  if (m === state.mode) return;
+  if (state.players.length && !state.over && (state.turn.length || state.roll.phase === 'rolling')) { toast('Finish this turn first', 'bad'); return; }
+  state.mode = m; state.roll = newRoll(); ui.sim = null;
+  commit();
+}
+
+/* ---------- Dice mode: physics ---------- */
+// Top-down 2D rigid bodies with a fake height (z) for hops; faces flip as dice tumble.
+const TABLE = { W: 300, H: 400, S: 56 };
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const GRAV = 2400;
+
+function sizeTable() {
+  const t = app.querySelector('.table'), sp = app.querySelector('.spacer');
+  if (!t) return;
+  const top = t.getBoundingClientRect().top + window.scrollY;
+  const h = Math.max(260, window.innerHeight - top - sp.offsetHeight);
+  t.style.height = h + 'px';
+  TABLE.W = t.clientWidth; TABLE.H = h;
+  TABLE.S = Math.round(clamp(TABLE.W / 6.3, 44, 60));
+  t.style.setProperty('--S', TABLE.S + 'px');
+}
+function layoutDice(kind) {
+  const n = state.roll.dice.length, { W, H, S } = TABLE;
+  ui.sim = state.roll.dice.map((d, i) => {
+    let x, y, a;
+    if (kind === 'hand') {
+      const gap = Math.min(S * 1.2, (W - S * 1.2) / Math.max(1, n - 1));
+      x = W / 2 + (i - (n - 1) / 2) * gap; y = H - S * .95; a = ((i * 37) % 7 - 3) * .04;
+    } else {
+      const cols = 3, gx = W / (cols + 1), gy = S * 1.7;
+      x = gx * (1 + i % cols); y = H * .45 + (Math.floor(i / cols) - .5) * gy; a = ((i * 53) % 9 - 4) * .12;
+    }
+    return { x, y, a, z: 0, vx: 0, vy: 0, vz: 0, va: 0, dist: 0, air: 0, shown: d.f, final: d.f, done: true, lc: 0 };
+  });
+}
+function mountTable() {
+  sizeTable();
+  const R = state.roll;
+  if (!ui.anim) {
+    if (R.phase === 'ready' || !ui.sim || ui.sim.length !== R.dice.length) layoutDice(R.phase === 'ready' ? 'hand' : 'scatter');
+    else ui.sim.forEach(d => { d.x = clamp(d.x, TABLE.S / 2, TABLE.W - TABLE.S / 2); d.y = clamp(d.y, TABLE.S / 2, TABLE.H - TABLE.S / 2); });
+  }
+  draw();
+}
+function throwDice(fl) {
+  sizeTable();
+  const n = state.roll.dice.length, { W, H, S } = TABLE;
+  let ox = fl ? fl.x : W / 2 + (rnd() - .5) * W * .3, oy = fl ? fl.y : H - S;
+  let vx = fl ? fl.vx : (rnd() - .5) * 700, vy = fl ? fl.vy : -(1500 + rnd() * 700);
+  const sp = Math.hypot(vx, vy) || 1, target = clamp(sp * 1.1, 1300, 3400);
+  vx *= target / sp; vy *= target / sp;
+  ox = clamp(ox, S, W - S); oy = clamp(oy, S, H - S * .6);
+  ui.sim = state.roll.dice.map((d, i) => ({
+    x: clamp(ox + (i - (n - 1) / 2) * S * .55 + (rnd() - .5) * S * .4, S / 2, W - S / 2),
+    y: clamp(oy + (rnd() - .5) * S * .6, S / 2, H - S / 2),
+    a: rnd() * 6.283, z: 20 + rnd() * 30, vz: 250 + rnd() * 450,
+    vx: vx * (.8 + rnd() * .4) + (rnd() - .5) * 300, vy: vy * (.8 + rnd() * .4) + (rnd() - .5) * 200,
+    va: (rnd() - .5) * 28, dist: 0, air: 0, shown: rnd6(), final: d.f, done: false, lc: 0,
+  }));
+  ui.anim = true; ui.t0 = ui.last = performance.now();
+  clack(.5);
+  draw(); requestAnimationFrame(tick);
+}
+function tick(now) {
+  if (!ui.anim) return;
+  const dt = Math.min(.034, (now - ui.last) / 1000); ui.last = now;
+  for (let k = 0; k < 4; k++) physics(dt / 4);
+  draw();
+  if (ui.sim.every(d => d.done) || now - ui.t0 > 6000) {
+    ui.anim = false;
+    ui.sim.forEach(d => { d.done = true; d.vx = d.vy = d.va = d.vz = d.z = 0; d.shown = d.final; });
+    settleRoll();
+  } else requestAnimationFrame(tick);
+}
+function flip(d, sp) {
+  if (sp < 260 && d.z < 8) { d.shown = d.final; return; }
+  let f; do f = rnd6(); while (f === d.shown);
+  d.shown = f;
+}
+function hit(d, v) {
+  const now = performance.now();
+  if (now - d.lc > 60) { d.lc = now; clack(v); }
+}
+function physics(h) {
+  const { W, H, S } = TABLE, r = S / 2, sims = ui.sim, step = S * .8;
+  for (const d of sims) {
+    if (d.done) continue;
+    let sp = Math.hypot(d.vx, d.vy);
+    if (d.z > 0 || d.vz > 0) {                       // airborne: hop and tumble
+      d.vz -= GRAV * h; d.z += d.vz * h; d.air += h;
+      if (d.air > .06) { d.air = 0; flip(d, sp); }
+      if (d.z <= 0) {
+        d.z = 0;
+        const imp = -d.vz;
+        if (imp > 120) { d.vz = imp * .35; d.va += (rnd() - .5) * imp * .02; flip(d, sp); hit(d, imp / 700); }
+        else d.vz = 0;
+      }
+    } else {                                         // on the felt: friction, rolling over edges
+      const dec = Math.min(sp, (500 + sp * 1.6) * h);
+      if (sp > 0) { d.vx -= d.vx / sp * dec; d.vy -= d.vy / sp * dec; }
+      d.va *= Math.exp(-5 * h);
+      d.dist += sp * h;
+      if (d.dist > step) { d.dist -= step; flip(d, sp); }
+      sp = Math.hypot(d.vx, d.vy);
+      if (sp < 5 && Math.abs(d.va) < .5) { d.vx = d.vy = d.va = 0; d.done = true; d.shown = d.final; }
+    }
+    d.x += d.vx * h; d.y += d.vy * h; d.a += d.va * h;
+    if (d.x < r)     { d.x = r;     if (d.vx < 0) { hit(d, -d.vx / 1400); d.vx = -d.vx * .5; d.va += d.vy * .006; } }
+    if (d.x > W - r) { d.x = W - r; if (d.vx > 0) { hit(d,  d.vx / 1400); d.vx = -d.vx * .5; d.va -= d.vy * .006; } }
+    if (d.y < r)     { d.y = r;     if (d.vy < 0) { hit(d, -d.vy / 1400); d.vy = -d.vy * .5; d.va -= d.vx * .006; } }
+    if (d.y > H - r) { d.y = H - r; if (d.vy > 0) { hit(d,  d.vy / 1400); d.vy = -d.vy * .5; d.va += d.vx * .006; } }
+  }
+  const minD = S * 1.08;                             // dice vs dice, treated as circles
+  for (let i = 0; i < sims.length; i++) for (let j = i + 1; j < sims.length; j++) {
+    const A = sims[i], B = sims[j];
+    if (A.done && B.done) continue;
+    const dx = B.x - A.x, dy = B.y - A.y, dist = Math.hypot(dx, dy);
+    if (dist >= minD || dist < .01) continue;
+    const nx = dx / dist, ny = dy / dist, push = (minD - dist) / 2;
+    A.x -= nx * push; A.y -= ny * push; B.x += nx * push; B.y += ny * push;
+    const vn = (B.vx - A.vx) * nx + (B.vy - A.vy) * ny;
+    if (vn < 0) {
+      const jn = -1.55 * vn / 2, tw = (rnd() - .5) * jn * .02;
+      A.vx -= jn * nx; A.vy -= jn * ny; B.vx += jn * nx; B.vy += jn * ny;
+      A.va += tw; B.va -= tw;
+      if (-vn > 40) hit(A, -vn / 1600);
+      A.done = B.done = false;
+    }
+  }
+  for (const d of sims) { d.x = clamp(d.x, r, W - r); d.y = clamp(d.y, r, H - r); }
+}
+function draw() {
+  if (!ui.sim) return;
+  const els = app.querySelectorAll('.d3'), shs = app.querySelectorAll('.dsh'), S = TABLE.S, step = S * .8;
+  ui.sim.forEach((d, i) => {
+    const el = els[i], sh = shs[i];
+    if (!el) return;
+    const sp = Math.hypot(d.vx, d.vy);
+    let tf = `translate3d(${d.x - S / 2}px,${d.y - S / 2}px,0) `;
+    if (!d.done && d.z === 0 && sp > 40) {          // squash along the direction of travel as it rolls over
+      const dir = Math.atan2(d.vy, d.vx), k = 1 - .25 * Math.abs(Math.cos(Math.PI * d.dist / step));
+      tf += `rotate(${dir}rad) scaleX(${k}) rotate(${d.a - dir}rad)`;
+    } else tf += `rotate(${d.a}rad) scale(${1 + d.z / 260})`;
+    el.style.transform = tf;
+    if (+el.dataset.f !== d.shown) { el.innerHTML = die(d.shown); el.dataset.f = d.shown; }
+    sh.style.transform = `translate3d(${d.x - S / 2 + 3 + d.z * .35}px,${d.y - S / 2 + 5 + d.z * .6}px,0) rotate(${d.a}rad) scale(${.92 + d.z / 400})`;
+    sh.style.opacity = clamp(.55 - d.z / 250, .12, .55);
+  });
+}
+
+/* ---------- Dice mode: sound ---------- */
+let actx = null, noiseBuf = null;
+function unlockAudio() {
+  if (!state.sound) return;
+  try {
+    if (!actx) {
+      if (navigator.audioSession) navigator.audioSession.type = 'ambient';   // respect the silent switch
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (actx.state === 'suspended') actx.resume();
+  } catch (e) {}
+}
+function clack(v) {
+  if (!state.sound || !actx || actx.state !== 'running' || v < .04) return;
+  if (!noiseBuf) {
+    noiseBuf = actx.createBuffer(1, Math.floor(actx.sampleRate * .05), actx.sampleRate);
+    const ch = noiseBuf.getChannelData(0);
+    for (let i = 0; i < ch.length; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / ch.length, 4);
+  }
+  const src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+  src.buffer = noiseBuf; src.playbackRate.value = .8 + Math.random() * .5;
+  f.type = 'bandpass'; f.frequency.value = 1600 + Math.random() * 1600; f.Q.value = 1.4;
+  g.gain.value = Math.min(1, v) * .7;
+  src.connect(f).connect(g).connect(actx.destination);
+  src.start();
 }
 
 /* ---------- Views ---------- */
@@ -352,6 +653,7 @@ function render() {
     s.scrollTo({ left: on.offsetLeft - (s.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' });
   }
   if (ui.bump) { const t = app.querySelector('.total'); t && t.classList.add('bump'); ui.bump = false; }
+  if (state.screen === 'game' && state.mode === 'roll') mountTable();
 }
 
 function setupView() {
@@ -373,6 +675,20 @@ function setupView() {
 
     <h2>Game</h2>
     <div class="card">
+      <div class="opt">
+        <div class="opt-l">Dice</div>
+        <div class="seg">
+          <button class="${state.mode !== 'roll' ? 'on' : ''}" data-a="mode" data-v="buttons">Real dice</button>
+          <button class="${state.mode === 'roll' ? 'on' : ''}" data-a="mode" data-v="roll">Roll in the app</button>
+        </div>
+      </div>
+      ${state.mode === 'roll' ? `<div class="opt">
+        <div class="opt-l">Dice sounds</div>
+        <div class="seg">
+          <button class="${state.sound ? 'on' : ''}" data-a="sound" data-v="on">On</button>
+          <button class="${!state.sound ? 'on' : ''}" data-a="sound" data-v="off">Off</button>
+        </div>
+      </div>` : ''}
       <div class="opt">
         <div class="opt-l">Winning score</div>
         <div class="seg">${TARGETS.map(v => `<button class="${state.target === v ? 'on' : ''}" data-a="target" data-v="${v}">${fmt(v)}</button>`).join('')}</div>
@@ -404,13 +720,15 @@ function setupView() {
 
 function gameView() {
   const p = state.players[state.current];
-  const t = turnTotal();
+  const rollMode = state.mode === 'roll', R = state.roll, sel = rollSel();
+  const t = turnTotal() + (sel && sel.valid ? sel.pts : 0);
   const needOpen = p.score === 0 && state.minOpen > 0 && t < state.minOpen;
   return `
   <div class="wrap">
     <div class="top">
       <div class="brand">${die(5)}Farkle</div>
       <div class="top-meta"><span>Round ${state.round} · to ${fmt(state.target)}</span>
+        <button class="icon-btn" data-a="mode" data-v="${rollMode ? 'buttons' : 'roll'}" aria-label="${rollMode ? 'Use real dice' : 'Roll dice in the app'}">${rollMode ? ico.keypad : die(3)}</button>
         <button class="icon-btn" data-a="menu" aria-label="Players and settings">${ico.menu}</button></div>
     </div>
 
@@ -426,7 +744,7 @@ function gameView() {
 
     ${state.finalBy !== null && !state.over ? `<div class="banner">🏁 <span style="overflow:hidden;text-overflow:ellipsis"><b>Final round</b> · ${esc(state.players[state.finalBy].name)} hit ${fmt(state.target)}</span></div>` : ''}
 
-    ${GROUPS.map(G => `
+    ${rollMode ? tableView() : GROUPS.map(G => `
       <div class="grid grp ${G.cols === 2 ? 'c2' : ''}">
         ${RULES.filter(r => r.g === G.g).map(r => `
           <button class="sb press ${G.inline ? 'inline' : ''}" data-a="add" data-id="${r.id}" aria-label="${r.label}, ${state.pts[r.id]} points">
@@ -442,23 +760,50 @@ function gameView() {
     <div class="dock-top">
       <div class="who">
         <div class="who-n">${esc(p.name)}</div>
-        <div class="who-s">${needOpen ? `<span class="warn">Needs ${fmt(state.minOpen)} to get on the board</span>` : `Bank → <b class="num">${fmt(p.score + t)}</b>`}</div>
+        <div class="who-s">${
+          rollMode && R.phase === 'farkle' ? `<span class="warn">No scoring dice${turnTotal() ? ` · loses ${fmt(turnTotal())}` : ''}</span>`
+          : sel && !sel.valid ? '<span class="warn">Only keep dice that score</span>'
+          : needOpen ? `<span class="warn">Needs ${fmt(state.minOpen)} to get on the board</span>`
+          : `Bank → <b class="num">${fmt(p.score + t)}</b>`}</div>
       </div>
       <div class="total num ${t ? '' : 'zero'}">${fmt(t)}</div>
     </div>
     <div class="chips">
-      ${state.turn.length ? state.turn.map((x, i) => `
-        <button class="chip press" data-a="rmchip" data-i="${i}">${x.faces ? dice(x.faces) : ''}<span class="num">+${fmt(x.pts)}</span><span class="x">×</span></button>`).join('')
-        : '<span class="hint">Tap what was scored to add points</span>'}
+      ${state.turn.length ? state.turn.map((x, i) => rollMode
+        ? `<span class="chip">${dice(x.faces)}<span class="num">+${fmt(x.pts)}</span></span>`
+        : `<button class="chip press" data-a="rmchip" data-i="${i}">${x.faces ? dice(x.faces) : ''}<span class="num">+${fmt(x.pts)}</span><span class="x">×</span></button>`).join('')
+        : `<span class="hint">${rollMode ? 'Dice you keep show up here' : 'Tap what was scored to add points'}</span>`}
     </div>
     <div class="acts">
-      <button class="undo press" data-a="undo" aria-label="Undo" ${state.undo.length ? '' : 'disabled'}>${ico.undo}</button>
-      <button class="farkle press" data-a="farkle">Farkle</button>
-      <button class="bank press" data-a="bank" ${t > 0 && !needOpen ? '' : 'disabled'}>Bank${t ? ` <span class="num">${fmt(t)}</span>` : ''}</button>
+      <button class="undo press" data-a="undo" aria-label="Undo" ${state.undo.length && !(rollMode && R.phase === 'rolling') ? '' : 'disabled'}>${ico.undo}</button>
+      ${rollMode ? rollButton(R, sel) : '<button class="farkle press" data-a="farkle">Farkle</button>'}
+      <button class="bank press" data-a="bank" ${t > 0 && !needOpen && (!rollMode || R.phase === 'ready' || (sel && sel.valid)) ? '' : 'disabled'}>Bank${t ? ` <span class="num">${fmt(t)}</span>` : ''}</button>
     </div>
   </div></div>
 
   ${state.over ? winnerView() : ''}`;
+}
+
+function tableView() {
+  const R = state.roll;
+  const hint = R.phase === 'ready' ? `<div class="table-hint ready">${ico.up}Flick up to roll</div>`
+    : R.phase === 'rolled' ? `<div class="table-hint"><span>${R.dice.some(d => d.sel) ? 'Flick to roll the rest, or bank' : 'Tap the dice you want to keep'}</span></div>` : '';
+  return `
+    <div class="table">
+      ${hint}
+      ${R.dice.map(() => '<div class="dsh"></div>').join('')}
+      ${R.dice.map((d, i) => {
+        const f = R.phase === 'rolling' && ui.sim && ui.sim[i] ? ui.sim[i].shown : d.f;
+        return `<div class="d3 ${d.sel ? 'sel' : ''}" data-f="${f}">${die(f)}</div>`;
+      }).join('')}
+      ${R.phase === 'farkle' ? '<div class="farkle-msg">Farkle!<small>No scoring dice</small></div>' : ''}
+    </div>`;
+}
+function rollButton(R, sel) {
+  if (R.phase === 'farkle') return '<button class="farkle press" data-a="farkle">Next player</button>';
+  const left = R.phase === 'rolled' ? R.dice.length - (sel ? sel.faces.length : 0) : R.dice.length;
+  const can = R.phase === 'ready' || (R.phase === 'rolled' && sel && sel.valid);
+  return `<button class="rollbtn press" data-a="roll" ${can ? '' : 'disabled'}>${R.phase === 'rolled' && !left ? '🔥 Roll 6' : `Roll ${left}`}</button>`;
 }
 
 function winnerView() {
@@ -563,6 +908,9 @@ app.addEventListener('click', e => {
       break;
     }
     case 'bank': bank(); break;
+    case 'roll': unlockAudio(); rollDice(null); break;
+    case 'mode': setMode(b.dataset.v); break;
+    case 'sound': state.sound = b.dataset.v === 'on'; commit(); break;
     case 'farkle': farkle(); break;
     case 'undo': doUndo(); break;
     case 'again': startGame(true); break;
@@ -586,6 +934,40 @@ app.addEventListener('keydown', e => {
     state.draft.push(''); commit(); app.querySelector(`[data-draft="${i + 1}"]`).focus();
   } else e.target.blur();
 });
+
+/* Table gestures: tap a die to keep it, flick to throw. */
+let ptr = null;
+app.addEventListener('pointerdown', e => {
+  const t = e.target.closest('.table');
+  if (!t) return;
+  unlockAudio();
+  ptr = { id: e.pointerId, r: t.getBoundingClientRect(), x0: e.clientX, y0: e.clientY, t0: e.timeStamp, pts: [{ x: e.clientX, y: e.clientY, t: e.timeStamp }] };
+});
+window.addEventListener('pointermove', e => {
+  if (!ptr || e.pointerId !== ptr.id) return;
+  ptr.pts.push({ x: e.clientX, y: e.clientY, t: e.timeStamp });
+  if (ptr.pts.length > 12) ptr.pts.shift();
+});
+window.addEventListener('pointerup', e => {
+  if (!ptr || e.pointerId !== ptr.id) return;
+  const p = ptr; ptr = null;
+  const R = state.roll;
+  if (Math.hypot(e.clientX - p.x0, e.clientY - p.y0) < 12 && e.timeStamp - p.t0 < 500) {
+    if (R.phase !== 'rolled' || !ui.sim) return;
+    const x = e.clientX - p.r.left, y = e.clientY - p.r.top;
+    let best = -1, bd = TABLE.S * .75;
+    ui.sim.forEach((d, i) => { const dd = Math.hypot(d.x - x, d.y - y); if (dd < bd) { bd = dd; best = i; } });
+    if (best >= 0) toggleHold(best);
+    return;
+  }
+  const last = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+  const first = p.pts.find(q => last.t - q.t < 100) || p.pts[0];
+  const dt = Math.max(16, last.t - first.t) / 1000;
+  const vx = (last.x - first.x) / dt, vy = (last.y - first.y) / dt;
+  if (Math.hypot(vx, vy) > 450) rollDice({ x: last.x - p.r.left, y: last.y - p.r.top, vx, vy });
+});
+window.addEventListener('pointercancel', () => { ptr = null; });
+window.addEventListener('resize', () => { if (state.screen === 'game' && state.mode === 'roll') mountTable(); });
 
 render();
 
