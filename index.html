@@ -261,7 +261,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 17;   // bump together with CACHE in sw.js
+const APP_VERSION = 18;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -722,6 +722,7 @@ let actx = null, master = null, verb = null, noiseBuf = null;
 function unlockAudio() {
   if (!state.sound) return;
   try {
+    if (actx && actx.state === 'closed') { actx = null; noiseBuf = null; }   // iOS can close it; start over
     if (!actx) {
       if (navigator.audioSession) navigator.audioSession.type = 'ambient';   // follows the silent switch
       actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -736,9 +737,11 @@ function unlockAudio() {
       verb = actx.createGain(); verb.gain.value = .35;
       verb.connect(conv).connect(master);
     }
-    if (actx.state === 'suspended') actx.resume();
+    // iOS leaves audio 'interrupted' (not just 'suspended') after switching apps or locking the phone
+    if (actx.state !== 'running') { const p = actx.resume(); if (p && p.catch) p.catch(() => {}); }
   } catch (e) {}
 }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') unlockAudio(); });
 const audioOn = () => state.sound && actx && actx.state === 'running';
 const rand = (a, b) => a + Math.random() * (b - a);
 function envGain(T, a, peak, d) {
