@@ -1,6 +1,6 @@
 // Keeps the app working with no internet. Online, it always loads the newest version
 // (and refreshes the saved copy); offline or on a slow connection, it uses the saved copy.
-const CACHE = 'farkle-v20';   // keep in sync with APP_VERSION in index.html
+const CACHE = 'farkle-v21';   // keep in sync with APP_VERSION in index.html
 const FILES = ['./', './index.html', './manifest.json', './icon-180.png', './icon-512.png'];
 const NETWORK_TIMEOUT = 2500;
 
