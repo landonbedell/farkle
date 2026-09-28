@@ -124,7 +124,7 @@
 
   /* ---------- Dice table ---------- */
   .table { position: relative; margin-top: 10px; border-radius: 20px; overflow: hidden; touch-action: none; min-height: 260px;
-    perspective: 1300px; perspective-origin: 50% 45%; --h: 28px;
+    perspective: 1050px; perspective-origin: 50% 45%; --h: 28px;
     background: radial-gradient(120% 90% at 50% 35%, #1f4434 0%, #15301f 55%, #0f2318 100%);
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.05), inset 0 10px 30px rgba(0,0,0,.35); }
   .table.shake { animation: shake .45s ease; }
@@ -137,11 +137,18 @@
   .d3 .face .b { fill: var(--die); }
   .d3 .face .p { fill: var(--pip); }
   .d3 .lit { position: absolute; inset: 0; background: #000; opacity: 0; }
+  /* bevel: slightly darker rounded edges and a soft highlight toward the light, so a face reads as part of a cube */
+  .d3 .face::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    box-shadow: inset 0 0 0 1px rgba(60, 45, 20, .12),
+                inset 0 0 calc(var(--S) * .17) rgba(70, 55, 30, .32),
+                inset calc(var(--S) * .05) calc(var(--S) * .06) calc(var(--S) * .07) rgba(255, 255, 255, .55); }
   .d3 .core { background: #cbc3b1; transform: scale(.96); }
   .d3 .core.cx { transform: rotateY(90deg) scale(.96); }
   .d3 .core.cy { transform: rotateX(90deg) scale(.96); }
   .d3.sel .face .b { fill: #fff3cf; stroke: var(--gold); stroke-width: 14; }
-  .dsh { border-radius: 26%; background: rgba(0,0,0,.5); filter: blur(4px); }
+  /* tight dark contact shadow right under the die + a soft wider shadow cast away from the light */
+  .dsh { border-radius: 26%; background: rgba(0,0,0,.55); filter: blur(1.5px);
+    box-shadow: 0 0 3px 1px rgba(0,0,0,.45), calc(var(--S) * .1) calc(var(--S) * .17) calc(var(--S) * .3) calc(var(--S) * .06) rgba(0,0,0,.4); }
   .table-hint { position: absolute; left: 0; right: 0; top: 12px; z-index: 2; text-align: center; color: rgba(255,255,255,.72); font-size: 14px; font-weight: 600; pointer-events: none; }
   .table-hint span { display: inline-block; padding: 5px 12px; border-radius: 999px; background: rgba(6,16,11,.6); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
   .table-hint.ready { top: 34%; font-size: 17px; color: rgba(255,255,255,.72); animation: nudge 1.6s ease-in-out infinite; }
@@ -216,6 +223,8 @@
   .opt { padding: 12px 10px 14px; }
   .opt + .opt { border-top: 1px solid var(--line); }
   .opt-l { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .opt-hint { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.35; }
+  .opt-hint:empty { display: none; }
   .seg { display: flex; background: var(--surface-2); border-radius: 12px; padding: 3px; }
   .seg button { flex: 1; height: 38px; border-radius: 9px; font-size: 14px; font-weight: 700; color: var(--muted); }
   .seg button.on { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.3); }
@@ -261,7 +270,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 18;   // bump together with CACHE in sw.js
+const APP_VERSION = 19;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -293,7 +302,7 @@ function defaults() {
     screen: 'setup', draft: ['', ''], players: [], current: 0, turn: [], round: 1,
     target: 10000, minOpen: 0, pts: Object.fromEntries(RULES.map(r => [r.id, r.pts])),
     finalBy: null, over: false, undo: [],
-    mode: 'buttons', sound: true, roll: newRoll(),   // mode: 'buttons' (real dice) | 'roll' (roll in the app)
+    mode: 'buttons', sound: true, soundAlways: false, roll: newRoll(),   // mode: 'buttons' (real dice) | 'roll' (roll in the app)
   };
 }
 let state = load() || defaults();
@@ -712,7 +721,7 @@ function draw() {
       const n = applyM(R, NORMALS[j]);
       lits[j].style.opacity = clamp((.86 - (n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2])) * .6, 0, .55).toFixed(3);
     }
-    sh.style.transform = `translate3d(${d.x - S / 2 + 4 + z * .35}px,${d.y - S / 2 + 7 + z * .6}px,0) rotate(${Math.atan2(R[3], R[0])}rad) scale(${.95 + z / 400})`;
+    sh.style.transform = `translate3d(${d.x - S / 2 + 1.5 + z * .35}px,${d.y - S / 2 + 3 + z * .6}px,0) rotate(${Math.atan2(R[3], R[0])}rad) scale(${.97 + z / 400})`;
     sh.style.opacity = clamp(.55 - z / 250, .12, .55);
   });
 }
@@ -723,8 +732,10 @@ function unlockAudio() {
   if (!state.sound) return;
   try {
     if (actx && actx.state === 'closed') { actx = null; noiseBuf = null; }   // iOS can close it; start over
+    // 'ambient' follows the ring/silent switch; 'playback' plays anyway (and may pause other apps' music)
+    const session = state.soundAlways ? 'playback' : 'ambient';
+    if (navigator.audioSession && navigator.audioSession.type !== session) navigator.audioSession.type = session;
     if (!actx) {
-      if (navigator.audioSession) navigator.audioSession.type = 'ambient';   // follows the silent switch
       actx = new (window.AudioContext || window.webkitAudioContext)();
       const comp = actx.createDynamicsCompressor();
       comp.threshold.value = -14; comp.ratio.value = 4;
@@ -875,15 +886,15 @@ const SFX = {
     };
     const land = .12;                               // when the FARKLE text finishes slamming down
     burst({ a: land - .01, d: .03, v: .16, f: 900, q: .8 });                           // whoosh as it drops in
-    // slap: a short, mid-heavy smack (like a hand on a table) rather than a hissy snare
-    const smack = (t, v) => {
-      burst({ t, a: .0003, d: .028, v: v * .75, f: 1100, q: .9, send: .35 });         // the smack
-      burst({ t, a: .0003, d: .008, v: v * .3, type: 'highpass', f: 2500 });           // skin snap, kept very short
-    };
-    smack(land, 1);
-    smack(land + .009, .4);                                                            // second contact of a flat hand
-    tone(110, { t: land, a: .001, d: .24, v: .6, to: 45 });                              // boom
-    burst({ t: land, a: .001, d: .18, v: .45, type: 'lowpass', f: 200 });              // thud
+    // slap: built like a clap - a few very fast bright bursts, then a short splatty tail;
+    // the low end stays small so it reads as a slap, not a thud
+    [[0, 1], [.006, .75], [.014, .55]].forEach(([dt, v]) => {
+      burst({ t: land + dt, a: .0002, d: .011, v: v * .8, f: rand(1600, 2400), q: .7 });
+      burst({ t: land + dt, a: .0002, d: .004, v: v * .35, type: 'highpass', f: 3500 });
+    });
+    burst({ t: land + .016, a: .001, d: .09, v: .45, f: 1300, q: .5, send: .5 });      // splat tail
+    tone(150, { t: land, a: .001, d: .12, v: .3, to: 60 });                              // a little body
+    burst({ t: land, a: .001, d: .08, v: .18, type: 'lowpass', f: 250 });
     womp(196, 185, land + .35, .45);
     womp(147, 98, land + .92, 1.25, true);
   },
@@ -956,9 +967,13 @@ function setupView() {
       <div class="opt">
         <div class="opt-l">Sound effects</div>
         <div class="seg">
-          <button class="${state.sound ? 'on' : ''}" data-a="sound" data-v="on">On</button>
           <button class="${!state.sound ? 'on' : ''}" data-a="sound" data-v="off">Off</button>
+          <button class="${state.sound && !state.soundAlways ? 'on' : ''}" data-a="sound" data-v="on">On</button>
+          <button class="${state.sound && state.soundAlways ? 'on' : ''}" data-a="sound" data-v="always">Always</button>
         </div>
+        <div class="opt-hint">${state.sound && state.soundAlways
+          ? 'Plays even when your phone is on silent. Music from other apps may pause while you play.'
+          : state.sound ? 'Follows your ring/silent switch. Pick Always to hear it on silent (e.g. with headphones).' : ''}</div>
       </div>
       <div class="opt">
         <div class="opt-l">Winning score</div>
@@ -1197,7 +1212,9 @@ app.addEventListener('click', e => {
     case 'bank': bank(); break;
     case 'roll': unlockAudio(); rollDice(null); break;
     case 'mode': setMode(b.dataset.v); break;
-    case 'sound': state.sound = b.dataset.v === 'on'; unlockAudio(); SFX.pick(true); commit(); break;
+    case 'sound':
+      state.sound = b.dataset.v !== 'off'; state.soundAlways = b.dataset.v === 'always';
+      unlockAudio(); SFX.pick(true); commit(); break;
     case 'farkle': farkle(); break;
     case 'undo': doUndo(); break;
     case 'again': startGame(true); break;
