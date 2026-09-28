@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Farkle">
+<meta name="theme-color" content="#0b110f">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.json">
+<title>Farkle Scorekeeper</title>
+<style>
+  :root {
+    --bg: #0b110f;
+    --surface: #141c18;
+    --surface-2: #1b2520;
+    --surface-3: #24302a;
+    --line: rgba(255,255,255,.07);
+    --text: #eef2ee;
+    --muted: #87968d;
+    --gold: #f4c35a;
+    --gold-dim: rgba(244,195,90,.14);
+    --green: #34c77b;
+    --red: #ef5b52;
+    --die: #f6f2e8;
+    --pip: #18201c;
+    --r: 16px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  body { min-height: 100vh; padding-top: env(safe-area-inset-top); -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; touch-action: manipulation; padding: 0; }
+  button:disabled { opacity: .35; pointer-events: none; }
+  input { font: inherit; -webkit-user-select: text; user-select: text; }
+  svg { display: block; }
+  .num { font-variant-numeric: tabular-nums; }
+  .press { transition: transform .08s ease, background-color .15s ease; }
+  .press:active { transform: scale(.95); }
+
+  .wrap { max-width: 560px; margin: 0 auto; padding: 8px 16px 0; }
+  .top { display: flex; align-items: center; justify-content: space-between; height: 44px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 22px; letter-spacing: -.3px; }
+  .brand svg { width: 28px; transform: rotate(-10deg); }
+  .top-meta { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 14px; }
+  .icon-btn { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; color: var(--text); }
+  .icon-btn:active { background: var(--surface-2); }
+  .icon-btn svg { width: 22px; height: 22px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); margin: 22px 2px 10px; font-weight: 700; }
+
+  /* ---------- Dice ---------- */
+  .die .b { fill: var(--die); }
+  .die .p { fill: var(--pip); }
+  .die.blank .b { fill: none; stroke: var(--die); stroke-width: 7; opacity: .75; }
+  .dice { display: flex; align-items: center; justify-content: center; gap: 3px; }
+  .dice .gap { width: 5px; }
+  .dice svg { width: var(--d, 22px); height: var(--d, 22px); flex: none; }
+
+  /* ---------- Player strip ---------- */
+  .strip { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 4px 16px 2px; scroll-snap-type: x proximity; }
+  .strip::-webkit-scrollbar { display: none; }
+  .pc { flex: 1 0 100px; max-width: 180px; text-align: left; background: var(--surface); border-radius: 14px; padding: 8px 12px;
+    border: 1.5px solid transparent; scroll-snap-align: center; position: relative; }
+  .pc.on { border-color: var(--gold); background: var(--gold-dim); }
+  .pc-n { display: block; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pc.on .pc-n { color: var(--gold); font-weight: 700; }
+  .pc-s { display: block; font-size: 19px; font-weight: 800; margin-top: 1px; letter-spacing: -.3px; }
+  .pc-bar { display: block; height: 3px; border-radius: 2px; background: rgba(255,255,255,.07); margin-top: 6px; overflow: hidden; }
+  .pc-bar i { display: block; height: 100%; background: var(--gold); border-radius: 2px; }
+  .pc .flag { position: absolute; top: 8px; right: 10px; font-size: 12px; }
+  .banner { white-space: nowrap; overflow: hidden; margin-top: 8px; padding: 7px 12px; border-radius: 12px; background: rgba(239,91,82,.12); color: #ffb3ad; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+
+  /* ---------- Score buttons ---------- */
+  .grp { margin-top: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .grid.c2 { grid-template-columns: repeat(2, 1fr); }
+  .sb { background: var(--surface); border-radius: 14px; padding: 11px 4px 10px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; }
+  .sb:active { background: var(--surface-3); }
+  .sb-t { display: flex; flex-direction: column; align-items: center; line-height: 1.1; }
+  .sb.inline .sb-t { flex-direction: row; gap: 8px; align-items: baseline; }
+  .sb-l { font-size: 12px; color: var(--muted); font-weight: 600; text-align: center; }
+  .sb-v { font-size: 16px; font-weight: 800; color: var(--text); }
+  .sb-v::before { content: "+"; color: var(--muted); font-weight: 600; margin-right: 1px; }
+  .sb.custom { background: transparent; border: 1.5px dashed rgba(255,255,255,.14); padding: 9.5px 4px 8.5px; }
+  .sb.custom svg.kp-ico { width: 24px; height: 24px; color: var(--muted); }
+  .sb.custom .sb-v { font-size: 14px; color: var(--muted); }
+  .sb.custom .sb-v::before { content: none; }
+
+  /* ---------- Dock ---------- */
+  .spacer { height: calc(176px + env(safe-area-inset-bottom)); }
+  .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: rgba(20,28,24,.94);
+    -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4);
+    border-top: 1px solid var(--line); border-radius: 22px 22px 0 0; box-shadow: 0 -10px 30px rgba(0,0,0,.35);
+    padding: 12px 16px calc(10px + env(safe-area-inset-bottom)); }
+  .dock-in { max-width: 560px; margin: 0 auto; }
+  .dock-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+  .who { min-width: 0; }
+  .who-n { font-size: 20px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -.3px; }
+  .who-s { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .who-s b { color: var(--text); font-weight: 700; }
+  .who-s .warn { color: #ffb3ad; }
+  .total { font-size: 42px; font-weight: 800; line-height: .95; letter-spacing: -1.5px; color: var(--gold); transition: color .2s; }
+  .total.zero { color: rgba(255,255,255,.18); }
+  .total.bump { animation: bump .28s ease; }
+  @keyframes bump { 40% { transform: scale(1.12); } }
+  .chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 8px -16px 10px; padding: 0 16px; min-height: 28px; align-items: center; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip { flex: none; display: flex; align-items: center; gap: 6px; background: var(--surface-3); border-radius: 999px; padding: 5px 10px 5px 7px; font-size: 13px; font-weight: 600; }
+  .chip .dice { --d: 13px; gap: 2px; }
+  .chip .x { color: var(--muted); margin-left: 2px; font-weight: 500; }
+  .hint { color: var(--muted); font-size: 13px; }
+  .acts { display: grid; grid-template-columns: 56px 1fr 1.5fr; gap: 8px; }
+  .acts button { height: 52px; border-radius: 16px; font-weight: 800; font-size: 17px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .acts svg { width: 22px; height: 22px; }
+  .undo { background: var(--surface-3); }
+  .farkle { background: rgba(239,91,82,.16); color: var(--red); }
+  .farkle:active { background: rgba(239,91,82,.3); }
+  .bank { background: var(--green); color: #052414; }
+  .bank:disabled { background: var(--surface-3); color: var(--muted); opacity: 1; }
+
+  /* ---------- Feedback ---------- */
+  .float { position: fixed; z-index: 30; pointer-events: none; font-weight: 800; font-size: 20px; color: var(--gold);
+    transform: translate(-50%, 0); animation: floatUp .65s ease-out forwards; text-shadow: 0 2px 8px rgba(0,0,0,.5); }
+  @keyframes floatUp { to { transform: translate(-50%, -46px); opacity: 0; } }
+  .flash { position: fixed; inset: 0; z-index: 25; pointer-events: none; background: radial-gradient(circle at 50% 80%, rgba(239,91,82,.45), rgba(239,91,82,0) 70%); animation: fade .6s ease forwards; }
+  @keyframes fade { from { opacity: 1; } to { opacity: 0; } }
+  .toast { position: fixed; left: 50%; top: calc(12px + env(safe-area-inset-top)); z-index: 40; transform: translateX(-50%);
+    background: var(--surface-3); color: var(--text); padding: 10px 16px; border-radius: 999px; font-weight: 700; font-size: 14px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4); white-space: nowrap; animation: pop 1.6s ease forwards; }
+  .toast.bad { background: var(--red); color: #fff; }
+  .toast.good { background: var(--green); color: #052414; }
+  @keyframes pop { 0% { opacity: 0; transform: translate(-50%,-8px); } 10%,82% { opacity: 1; transform: translate(-50%,0); } 100% { opacity: 0; } }
+
+  /* ---------- Sheet (keypad) & modal ---------- */
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 50; animation: fade-in .15s ease; }
+  @keyframes fade-in { from { opacity: 0; } }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 51; background: var(--surface); border-radius: 24px 24px 0 0;
+    padding: 10px 16px calc(16px + env(safe-area-inset-bottom)); animation: up .22s cubic-bezier(.2,.9,.3,1); }
+  @keyframes up { from { transform: translateY(100%); } }
+  .sheet-in { max-width: 460px; margin: 0 auto; }
+  .grab { width: 38px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.18); margin: 0 auto 8px; }
+  .sheet-h { display: flex; align-items: center; justify-content: space-between; }
+  .sheet-h span { font-weight: 700; color: var(--muted); font-size: 15px; }
+  .kp-disp { font-size: 56px; font-weight: 800; text-align: center; letter-spacing: -1.5px; padding: 6px 0 14px; color: var(--gold); }
+  .kp-disp.empty { color: rgba(255,255,255,.18); }
+  .kp { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+  .kp button { height: 58px; border-radius: 14px; background: var(--surface-2); font-size: 24px; font-weight: 600; display: grid; place-items: center; }
+  .kp button:active { background: var(--surface-3); }
+  .kp .fn { font-size: 16px; color: var(--muted); }
+  .kp svg { width: 24px; height: 24px; }
+  .quick { display: flex; gap: 8px; margin-bottom: 12px; }
+  .quick button { flex: 1; height: 38px; border-radius: 10px; background: var(--surface-2); font-weight: 700; font-size: 14px; color: var(--muted); }
+
+  .wide { width: 100%; height: 56px; border-radius: 16px; font-weight: 800; font-size: 17px; }
+  .primary { background: var(--gold); color: #2a1f02; }
+  .secondary { background: var(--surface-2); }
+  .modal { position: fixed; left: 16px; right: 16px; top: 50%; transform: translateY(-50%); z-index: 51; max-width: 420px; margin: 0 auto;
+    background: var(--surface); border-radius: 24px; padding: 24px 20px 20px; text-align: center; animation: zoom .25s cubic-bezier(.2,.9,.3,1.2); }
+  @keyframes zoom { from { transform: translateY(-50%) scale(.9); opacity: 0; } }
+  .trophy { font-size: 52px; line-height: 1; }
+  .modal h3 { margin: 10px 0 4px; font-size: 26px; letter-spacing: -.5px; }
+  .modal .sub { color: var(--muted); margin-bottom: 16px; }
+  .standings { text-align: left; background: var(--surface-2); border-radius: 14px; margin-bottom: 16px; max-height: 38vh; overflow-y: auto; }
+  .standings div { display: flex; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .standings div:last-child { border-bottom: 0; }
+  .standings div:first-child { color: var(--gold); font-weight: 700; }
+  .modal button + button { margin-top: 8px; }
+
+  /* ---------- Setup ---------- */
+  .card { background: var(--surface); border-radius: 18px; padding: 6px; }
+  .prow { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 12px; }
+  .prow + .prow { border-top: 1px solid var(--line); }
+  .badge { width: 26px; height: 26px; border-radius: 8px; background: var(--surface-3); color: var(--muted); font-size: 13px; font-weight: 700; display: grid; place-items: center; flex: none; }
+  .prow input { flex: 1; min-width: 0; height: 48px; padding: 0 10px; border: 0; background: none; color: var(--text); font-size: 17px; outline: none; }
+  .prow input::placeholder { color: rgba(255,255,255,.25); }
+  .prow .icon-btn { color: var(--muted); }
+  .add-p { width: 100%; height: 50px; border-radius: 12px; color: var(--gold); font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .add-p:active { background: var(--surface-2); }
+  .opt { padding: 12px 10px 14px; }
+  .opt + .opt { border-top: 1px solid var(--line); }
+  .opt-l { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .seg { display: flex; background: var(--surface-2); border-radius: 12px; padding: 3px; }
+  .seg button { flex: 1; height: 38px; border-radius: 9px; font-size: 14px; font-weight: 700; color: var(--muted); }
+  .seg button.on { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+  details summary { list-style: none; padding: 14px 10px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::after { content: "›"; color: var(--muted); font-size: 22px; transition: transform .2s; }
+  details[open] summary::after { transform: rotate(90deg); }
+  .rule { display: flex; align-items: center; gap: 12px; padding: 8px 10px; }
+  .rule .dice { --d: 16px; justify-content: flex-start; width: 118px; flex: none; }
+  .rule span { flex: 1; font-size: 14px; }
+  .rule input { width: 84px; height: 38px; border-radius: 10px; border: 0; background: var(--surface-2); color: var(--text); text-align: right; padding: 0 10px; font-weight: 700; }
+  .reset { width: 100%; height: 44px; color: var(--muted); font-size: 14px; font-weight: 600; }
+  .setup-foot { position: sticky; bottom: 0; padding: 16px 0 calc(16px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, var(--bg) 30%); }
+  .setup-foot button + button { margin-top: 8px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* faces: 1–6 = pips, 0 = "any" die, '|' = small gap between groups */
+const RULES = [
+  { id: 'one1', label: 'One 1',  pts: 100,  g: 's', faces: [1] },
+  { id: 'one5', label: 'One 5',  pts: 50,   g: 's', faces: [5] },
+  { id: 't1', label: 'Three 1s', pts: 1000, g: 't', faces: [1,1,1] },
+  { id: 't2', label: 'Three 2s', pts: 200,  g: 't', faces: [2,2,2] },
+  { id: 't3', label: 'Three 3s', pts: 300,  g: 't', faces: [3,3,3] },
+  { id: 't4', label: 'Three 4s', pts: 400,  g: 't', faces: [4,4,4] },
+  { id: 't5', label: 'Three 5s', pts: 500,  g: 't', faces: [5,5,5] },
+  { id: 't6', label: 'Three 6s', pts: 600,  g: 't', faces: [6,6,6] },
+  { id: 'k4', label: 'Four of a kind', short: '4 of a kind', pts: 1000, g: 'k', faces: [0,0,0,0] },
+  { id: 'k5', label: 'Five of a kind', short: '5 of a kind', pts: 2000, g: 'k', faces: [0,0,0,0,0] },
+  { id: 'k6', label: 'Six of a kind', short: '6 of a kind',  pts: 3000, g: 'k', faces: [0,0,0,0,0,0] },
+  { id: 'str', label: 'Straight',      pts: 1500, g: 'c', faces: [1,2,3,4,5,6] },
+  { id: 'pr3', label: 'Three pairs',   pts: 1500, g: 'c', faces: [2,2,'|',4,4,'|',6,6] },
+  { id: 'k4p', label: 'Four + a pair', pts: 1500, g: 'c', faces: [3,3,3,3,'|',5,5] },
+  { id: 'tt',  label: 'Two triplets',  pts: 2500, g: 'c', faces: [2,2,2,'|',6,6,6] },
+];
+const GROUPS = [
+  { g: 's', cols: 3, d: 28, label: false },
+  { g: 't', cols: 3, d: 19, label: false },
+  { g: 'k', cols: 3, d: 13, label: true },
+  { g: 'c', cols: 2, d: 15, label: true, inline: true },
+];
+const KEY = 'farkle-scorekeeper-v1';
+const MAX_PLAYERS = 10;
+const TARGETS = [5000, 10000, 15000];
+const MIN_OPENS = [0, 350, 500, 1000];
+
+/* ---------- Icons ---------- */
+const PIPS = { 1: [[50,50]], 2: [[29,29],[71,71]], 3: [[27,27],[50,50],[73,73]], 4: [[29,29],[71,29],[29,71],[71,71]],
+  5: [[27,27],[73,27],[50,50],[27,73],[73,73]], 6: [[29,25],[71,25],[29,50],[71,50],[29,75],[71,75]] };
+const die = f => `<svg class="die ${f ? '' : 'blank'}" viewBox="0 0 100 100"><rect class="b" x="5" y="5" width="90" height="90" rx="22"/>${(PIPS[f] || []).map(([x, y]) => `<circle class="p" cx="${x}" cy="${y}" r="10"/>`).join('')}</svg>`;
+const dice = (faces, d) => `<span class="dice"${d ? ` style="--d:${d}px"` : ''}>${faces.map(f => f === '|' ? '<i class="gap"></i>' : die(f)).join('')}</span>`;
+const ico = {
+  undo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
+  menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
+  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1Z"/><path d="m16 10-4 4M12 10l4 4"/></svg>',
+  keypad: '<svg class="kp-ico" viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="5" r="1.8"/><circle cx="12" cy="5" r="1.8"/><circle cx="18" cy="5" r="1.8"/><circle cx="6" cy="11" r="1.8"/><circle cx="12" cy="11" r="1.8"/><circle cx="18" cy="11" r="1.8"/><circle cx="6" cy="17" r="1.8"/><circle cx="12" cy="17" r="1.8"/><circle cx="18" cy="17" r="1.8"/><circle cx="12" cy="22" r="1.4" opacity=".001"/></svg>',
+};
+
+/* ---------- State ---------- */
+function defaults() {
+  return {
+    screen: 'setup', draft: ['', ''], players: [], current: 0, turn: [], round: 1,
+    target: 10000, minOpen: 0, pts: Object.fromEntries(RULES.map(r => [r.id, r.pts])),
+    finalBy: null, over: false, undo: [],
+  };
+}
+let state = load() || defaults();
+const ui = { sheet: null, bump: false };   // not persisted
+
+function load() {
+  try { const s = JSON.parse(localStorage.getItem(KEY)); return s ? { ...defaults(), ...s } : null; } catch (e) { return null; }
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
+function snap() {
+  const { undo, ...rest } = state;
+  state.undo.push(JSON.stringify(rest));
+  if (state.undo.length > 80) state.undo.shift();
+}
+function commit() { save(); render(); }
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = n => Number(n).toLocaleString('en-US');
+const turnTotal = () => state.turn.reduce((a, t) => a + t.pts, 0);
+const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
+
+function toast(msg, kind = '') {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const t = document.createElement('div');
+  t.className = 'toast ' + kind; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 1700);
+}
+function floatFrom(el, text) {
+  const r = el.getBoundingClientRect();
+  const f = document.createElement('div');
+  f.className = 'float num'; f.textContent = text;
+  f.style.left = (r.left + r.width / 2) + 'px'; f.style.top = (r.top + 6) + 'px';
+  document.body.appendChild(f);
+  setTimeout(() => f.remove(), 700);
+}
+
+/* ---------- Game actions ---------- */
+function startGame(keepPlayers) {
+  const names = keepPlayers ? state.players.map(p => p.name) : state.draft.map(n => n.trim()).filter(Boolean);
+  if (!names.length) { toast('Add at least one player', 'bad'); return; }
+  Object.assign(state, { players: names.map(name => ({ name, score: 0 })), current: 0, turn: [], round: 1,
+    finalBy: null, over: false, undo: [], screen: 'game' });
+  commit(); window.scrollTo(0, 0);
+}
+function addScore(label, pts, faces) {
+  snap();
+  state.turn.push({ label, pts, faces });
+  ui.bump = true; buzz(8);
+  commit();
+}
+function nextPlayer() {
+  state.turn = [];
+  const next = (state.current + 1) % state.players.length;
+  if (state.finalBy !== null && next === state.finalBy) { state.over = true; return; }
+  if (next === 0) state.round++;
+  state.current = next;
+}
+function bank() {
+  const p = state.players[state.current], t = turnTotal();
+  if (t <= 0) return;
+  if (p.score === 0 && t < state.minOpen) { toast(`Need ${fmt(state.minOpen)} to get on the board`, 'bad'); return; }
+  snap();
+  p.score += t;
+  if (state.finalBy === null && p.score >= state.target) {
+    state.finalBy = state.current;
+    if (state.players.length > 1) toast(`🏁 ${p.name} hit ${fmt(state.target)} — final round!`, 'good');
+  } else toast(`${p.name} banks ${fmt(t)} → ${fmt(p.score)}`, 'good');
+  buzz(15);
+  nextPlayer(); commit();
+}
+function farkle() {
+  snap();
+  const t = turnTotal(), name = state.players[state.current].name;
+  toast(t ? `Farkle! ${name} loses ${fmt(t)}` : `Farkle! ${name}`, 'bad');
+  const fl = document.createElement('div'); fl.className = 'flash'; document.body.appendChild(fl); setTimeout(() => fl.remove(), 650);
+  buzz([30, 40, 30]);
+  nextPlayer(); commit();
+}
+function doUndo() {
+  const s = state.undo.pop();
+  if (!s) return;
+  const u = state.undo;
+  state = { ...JSON.parse(s), undo: u };
+  toast('Undone'); commit();
+}
+
+/* ---------- Views ---------- */
+const app = document.getElementById('app');
+
+function render() {
+  const strip = app.querySelector('.strip');
+  const prevLeft = strip ? strip.scrollLeft : 0;
+  app.innerHTML = (state.screen === 'setup' ? setupView() : gameView()) + sheetView();
+  const s = app.querySelector('.strip'), on = s && s.querySelector('.on');
+  if (on) {
+    s.scrollLeft = prevLeft;
+    s.scrollTo({ left: on.offsetLeft - (s.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' });
+  }
+  if (ui.bump) { const t = app.querySelector('.total'); t && t.classList.add('bump'); ui.bump = false; }
+}
+
+function setupView() {
+  const hasGame = state.players.length && !state.over;
+  return `
+  <div class="wrap">
+    <div class="top"><div class="brand">${die(5)}Farkle</div></div>
+
+    <h2>Players</h2>
+    <div class="card">
+      ${state.draft.map((n, i) => `
+        <div class="prow">
+          <span class="badge">${i + 1}</span>
+          <input data-draft="${i}" value="${esc(n)}" placeholder="Player name" autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="next">
+          ${state.draft.length > 1 ? `<button class="icon-btn" data-a="rm" data-i="${i}" aria-label="Remove">${ico.x}</button>` : ''}
+        </div>`).join('')}
+      ${state.draft.length < MAX_PLAYERS ? `<button class="add-p" data-a="addp">${ico.plus} Add player</button>` : ''}
+    </div>
+
+    <h2>Game</h2>
+    <div class="card">
+      <div class="opt">
+        <div class="opt-l">Winning score</div>
+        <div class="seg">${TARGETS.map(v => `<button class="${state.target === v ? 'on' : ''}" data-a="target" data-v="${v}">${fmt(v)}</button>`).join('')}</div>
+      </div>
+      <div class="opt">
+        <div class="opt-l">Minimum to get on the board</div>
+        <div class="seg">${MIN_OPENS.map(v => `<button class="${state.minOpen === v ? 'on' : ''}" data-a="minopen" data-v="${v}">${v ? fmt(v) : 'None'}</button>`).join('')}</div>
+      </div>
+    </div>
+
+    <h2>House rules</h2>
+    <div class="card">
+      <details>
+        <summary>Scoring values</summary>
+        ${RULES.map(r => `
+          <div class="rule">${dice(r.faces)}<span>${r.label}</span>
+            <input type="number" inputmode="numeric" data-pts="${r.id}" value="${state.pts[r.id]}"></div>`).join('')}
+        <button class="reset" data-a="resetpts">Reset to defaults</button>
+      </details>
+    </div>
+
+    <div class="setup-foot">
+      ${hasGame ? `<button class="wide primary press" data-a="resume">Resume game</button>
+                   <button class="wide secondary press" data-a="start">Start new game</button>`
+                : `<button class="wide primary press" data-a="start">Start game</button>`}
+    </div>
+  </div>`;
+}
+
+function gameView() {
+  const p = state.players[state.current];
+  const t = turnTotal();
+  const needOpen = p.score === 0 && state.minOpen > 0 && t < state.minOpen;
+  return `
+  <div class="wrap">
+    <div class="top">
+      <div class="brand">${die(5)}Farkle</div>
+      <div class="top-meta"><span>Round ${state.round} · to ${fmt(state.target)}</span>
+        <button class="icon-btn" data-a="menu" aria-label="Players and settings">${ico.menu}</button></div>
+    </div>
+
+    <div class="strip">
+      ${state.players.map((x, i) => `
+        <button class="pc press ${i === state.current && !state.over ? 'on' : ''}" data-a="edit" data-i="${i}">
+          ${state.finalBy === i ? '<span class="flag">🏁</span>' : ''}
+          <span class="pc-n">${esc(x.name)}</span>
+          <span class="pc-s num">${fmt(x.score)}</span>
+          <span class="pc-bar"><i style="width:${Math.min(100, x.score / state.target * 100)}%"></i></span>
+        </button>`).join('')}
+    </div>
+
+    ${state.finalBy !== null && !state.over ? `<div class="banner">🏁 <span style="overflow:hidden;text-overflow:ellipsis"><b>Final round</b> · ${esc(state.players[state.finalBy].name)} hit ${fmt(state.target)}</span></div>` : ''}
+
+    ${GROUPS.map(G => `
+      <div class="grid grp ${G.cols === 2 ? 'c2' : ''}">
+        ${RULES.filter(r => r.g === G.g).map(r => `
+          <button class="sb press ${G.inline ? 'inline' : ''}" data-a="add" data-id="${r.id}" aria-label="${r.label}, ${state.pts[r.id]} points">
+            ${dice(r.faces, G.d)}
+            <span class="sb-t">${G.label ? `<span class="sb-l">${r.short || r.label}</span>` : ''}<span class="sb-v num">${fmt(state.pts[r.id])}</span></span>
+          </button>`).join('')}
+        ${G.g === 's' ? `<button class="sb custom press" data-a="custom">${ico.keypad}<span class="sb-t"><span class="sb-v">Custom</span></span></button>` : ''}
+      </div>`).join('')}
+    <div class="spacer"></div>
+  </div>
+
+  <div class="dock"><div class="dock-in">
+    <div class="dock-top">
+      <div class="who">
+        <div class="who-n">${esc(p.name)}</div>
+        <div class="who-s">${needOpen ? `<span class="warn">Needs ${fmt(state.minOpen)} to get on the board</span>` : `Bank → <b class="num">${fmt(p.score + t)}</b>`}</div>
+      </div>
+      <div class="total num ${t ? '' : 'zero'}">${fmt(t)}</div>
+    </div>
+    <div class="chips">
+      ${state.turn.length ? state.turn.map((x, i) => `
+        <button class="chip press" data-a="rmchip" data-i="${i}">${x.faces ? dice(x.faces) : ''}<span class="num">+${fmt(x.pts)}</span><span class="x">×</span></button>`).join('')
+        : '<span class="hint">Tap what was scored to add points</span>'}
+    </div>
+    <div class="acts">
+      <button class="undo press" data-a="undo" aria-label="Undo" ${state.undo.length ? '' : 'disabled'}>${ico.undo}</button>
+      <button class="farkle press" data-a="farkle">Farkle</button>
+      <button class="bank press" data-a="bank" ${t > 0 && !needOpen ? '' : 'disabled'}>Bank${t ? ` <span class="num">${fmt(t)}</span>` : ''}</button>
+    </div>
+  </div></div>
+
+  ${state.over ? winnerView() : ''}`;
+}
+
+function winnerView() {
+  const ranked = state.players.map(p => p).sort((a, b) => b.score - a.score);
+  const top = ranked[0].score, winners = ranked.filter(p => p.score === top);
+  return `
+  <div class="scrim"></div>
+  <div class="modal">
+    <div class="trophy">🏆</div>
+    <h3>${winners.map(w => esc(w.name)).join(' & ')} ${winners.length > 1 ? 'tie!' : 'wins!'}</h3>
+    <div class="sub num">${fmt(top)} points · ${state.round} rounds</div>
+    <div class="standings">${ranked.map((p, i) => `<div><span>${i + 1}. ${esc(p.name)}</span><span class="num">${fmt(p.score)}</span></div>`).join('')}</div>
+    <button class="wide primary press" data-a="again">Play again</button>
+    <button class="wide secondary press" data-a="undo">Undo last turn</button>
+    <button class="wide secondary press" data-a="menu">Change players</button>
+  </div>`;
+}
+
+function sheetView() {
+  const s = ui.sheet;
+  if (!s) return '';
+  const val = s.value;
+  const title = s.mode === 'custom' ? 'Add custom points' : `Set ${esc(state.players[s.i].name)}'s score`;
+  const ok = s.mode === 'custom' ? (val ? `Add ${fmt(val)}` : 'Add points') : `Set score to ${fmt(val || 0)}`;
+  return `
+  <div class="scrim" data-a="close"></div>
+  <div class="sheet"><div class="sheet-in">
+    <div class="grab"></div>
+    <div class="sheet-h"><span>${title}</span><button class="icon-btn" data-a="close" aria-label="Close">${ico.x}</button></div>
+    <div class="kp-disp num ${val ? '' : 'empty'}">${val ? fmt(val) : '0'}</div>
+    ${s.mode === 'custom' ? `<div class="quick">${[50, 100, 250, 500].map(v => `<button class="press" data-a="kpadd" data-v="${v}">+${v}</button>`).join('')}</div>` : ''}
+    <div class="kp">
+      ${[1,2,3,4,5,6,7,8,9].map(n => `<button data-a="kp" data-k="${n}">${n}</button>`).join('')}
+      <button class="fn" data-a="kp" data-k="C">Clear</button>
+      <button data-a="kp" data-k="0">0</button>
+      <button class="fn" data-a="kp" data-k="B" aria-label="Delete">${ico.back}</button>
+    </div>
+    <button class="wide primary press" data-a="kpok" ${s.mode === 'custom' && !val ? 'disabled' : ''}>${ok}</button>
+  </div></div>`;
+}
+
+/* ---------- Events ---------- */
+function openSheet(mode, i) {
+  ui.sheet = { mode, i, value: mode === 'edit' ? String(state.players[i].score || '') : '', fresh: mode === 'edit' };
+  render();
+}
+
+app.addEventListener('click', e => {
+  const b = e.target.closest('[data-a]');
+  if (!b) return;
+  const a = b.dataset.a;
+  switch (a) {
+    case 'addp':
+      state.draft.push(''); commit();
+      app.querySelector(`[data-draft="${state.draft.length - 1}"]`).focus();
+      break;
+    case 'rm': state.draft.splice(+b.dataset.i, 1); commit(); break;
+    case 'target': state.target = +b.dataset.v; commit(); break;
+    case 'minopen': state.minOpen = +b.dataset.v; commit(); break;
+    case 'resetpts': state.pts = Object.fromEntries(RULES.map(r => [r.id, r.pts])); commit(); break;
+    case 'start':
+      if (state.players.length && !state.over && !confirm('Start a new game? The current game will be lost.')) return;
+      startGame(false); break;
+    case 'resume': state.screen = 'game'; commit(); window.scrollTo(0, 0); break;
+    case 'menu':
+      if (state.players.length) state.draft = state.players.map(p => p.name);
+      state.screen = 'setup'; commit(); window.scrollTo(0, 0); break;
+    case 'add': {
+      const r = RULES.find(r => r.id === b.dataset.id);
+      floatFrom(b, '+' + fmt(state.pts[r.id]));
+      addScore(r.label, state.pts[r.id], r.faces);
+      break;
+    }
+    case 'rmchip': snap(); state.turn.splice(+b.dataset.i, 1); commit(); break;
+    case 'custom': openSheet('custom'); break;
+    case 'edit': openSheet('edit', +b.dataset.i); break;
+    case 'close': ui.sheet = null; render(); break;
+    case 'kp': {
+      const s = ui.sheet, k = b.dataset.k;
+      if (s.fresh && k !== 'B') s.value = '';
+      s.fresh = false;
+      if (k === 'C') s.value = '';
+      else if (k === 'B') s.value = s.value.slice(0, -1);
+      else if (s.value.length < 6) s.value = (s.value + k).replace(/^0+/, '');
+      render(); break;
+    }
+    case 'kpadd': { const s = ui.sheet; s.value = String((+s.value || 0) + +b.dataset.v); s.fresh = false; render(); break; }
+    case 'kpok': {
+      const s = ui.sheet, v = +s.value || 0;
+      ui.sheet = null;
+      if (s.mode === 'custom') { if (v) addScore('Custom', v, null); else render(); }
+      else { snap(); state.players[s.i].score = v; commit(); }
+      break;
+    }
+    case 'bank': bank(); break;
+    case 'farkle': farkle(); break;
+    case 'undo': doUndo(); break;
+    case 'again': startGame(true); break;
+  }
+});
+
+app.addEventListener('input', e => {
+  const el = e.target;
+  if (el.dataset.draft !== undefined) state.draft[+el.dataset.draft] = el.value;
+  else if (el.dataset.pts) state.pts[el.dataset.pts] = Math.max(0, parseInt(el.value, 10) || 0);
+  save();
+});
+
+app.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.target.dataset.draft === undefined) return;
+  e.preventDefault();
+  const i = +e.target.dataset.draft;
+  const next = app.querySelector(`[data-draft="${i + 1}"]`);
+  if (next) next.focus();
+  else if (state.draft.length < MAX_PLAYERS && e.target.value.trim()) {
+    state.draft.push(''); commit(); app.querySelector(`[data-draft="${i + 1}"]`).focus();
+  } else e.target.blur();
+});
+
+render();
+
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>
