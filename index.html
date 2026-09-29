@@ -172,6 +172,13 @@
     background: var(--surface-3); color: var(--text); padding: 10px 16px; border-radius: 999px; font-weight: 700; font-size: 14px;
     box-shadow: 0 8px 24px rgba(0,0,0,.4); white-space: nowrap; animation: pop 1.6s ease forwards; }
   .toast.bad { background: var(--red); color: #fff; }
+  .bubble { position: fixed; left: 50%; z-index: 42; max-width: calc(100% - 40px); width: max-content; pointer-events: none;
+    background: #1b2838; border: 1px solid rgba(90,169,244,.45); color: #eaf3ff; padding: 9px 14px 10px; border-radius: 16px;
+    font-weight: 650; font-size: 15px; line-height: 1.3; box-shadow: 0 10px 30px rgba(0,0,0,.45); animation: bubble 3.6s ease forwards; }
+  .bubble b { display: block; font-size: 11px; font-weight: 800; color: #8cc4ff; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 2px; }
+  .bubble::after { content: ''; position: absolute; top: -6px; left: calc(var(--tail, 29px) - 5px); width: 10px; height: 10px; background: #1b2838;
+    border-left: 1px solid rgba(90,169,244,.45); border-top: 1px solid rgba(90,169,244,.45); transform: rotate(45deg); }
+  @keyframes bubble { 0% { opacity: 0; transform: translate(-50%, 8px) scale(.94); } 7%, 86% { opacity: 1; transform: translate(-50%, 0) scale(1); } 100% { opacity: 0; transform: translate(-50%, -4px); } }
   .confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 45; }
   .toast.good { background: var(--green); color: #052414; }
   @keyframes pop { 0% { opacity: 0; transform: translate(-50%,-8px); } 10%,82% { opacity: 1; transform: translate(-50%,0); } 100% { opacity: 0; } }
@@ -282,7 +289,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 26;   // bump together with CACHE in sw.js
+const APP_VERSION = 27;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -314,7 +321,7 @@ function defaults() {
     screen: 'setup', draft: ['', ''], draftAI: [null, null], players: [], current: 0, turn: [], round: 1,
     target: 10000, minOpen: 0, pts: Object.fromEntries(RULES.map(r => [r.id, r.pts])),
     finalBy: null, over: false, undo: [],
-    mode: 'buttons', sound: true, soundAlways: false, roll: newRoll(),   // mode: 'buttons' (real dice) | 'roll' (roll in the app)
+    mode: 'buttons', sound: true, soundAlways: false, talk: 'off', roll: newRoll(),   // talk: 'off' | 'text' | 'voice'   // mode: 'buttons' (real dice) | 'roll' (roll in the app)
   };
 }
 let state = load() || defaults();
@@ -371,6 +378,7 @@ function startGame(keepPlayers) {
     finalBy: null, over: false, undo: [], screen: 'game', roll: newRoll() });
   ui.sim = null;
   commit(); window.scrollTo(0, 0);
+  talk('start', null, { force: true, delay: 900 });
 }
 function addScore(label, pts, faces) {
   snap();
@@ -398,15 +406,18 @@ function bank() {
   if (p.score === 0 && t < state.minOpen) { toast(`Need ${fmt(state.minOpen)} to get on the board`, 'bad'); return; }
   snap();
   if (sel) state.turn.push({ label: 'Kept', pts: sel.pts, faces: sel.faces });
+  const best = Math.max(0, ...state.players.filter(x => x !== p).map(x => x.score)), wasAhead = p.score > best;
   p.score += t;
   SFX.bank(t);
+  let ev = t >= 1000 ? 'bankBig' : !wasAhead && p.score > best ? 'lead' : t < 350 ? 'bankSmall' : null;
   if (state.finalBy === null && p.score >= state.target) {
     state.finalBy = state.current;
-    if (state.players.length > 1) { toast(`🏁 ${p.name} hit ${fmt(state.target)} — final round!`, 'good'); setTimeout(SFX.alert, 650); }
+    if (state.players.length > 1) { toast(`🏁 ${p.name} hit ${fmt(state.target)} — final round!`, 'good'); setTimeout(SFX.alert, 650); ev = 'final'; }
   } else toast(`${p.name} banks ${fmt(t)} → ${fmt(p.score)}`, 'good');
   buzz(15);
   nextPlayer(); commit();
-  if (state.over) setTimeout(SFX.win, 500);
+  if (state.over) { setTimeout(SFX.win, 500); talkWinner(); }
+  else if (ev) talk(ev, p, { delay: 700 });
 }
 function farkle() {
   snap();
@@ -414,9 +425,10 @@ function farkle() {
   toast(t ? `Farkle! ${name} loses ${fmt(t)}` : `Farkle! ${name}`, 'bad');
   const fl = document.createElement('div'); fl.className = 'flash'; document.body.appendChild(fl); setTimeout(() => fl.remove(), 650);
   buzz([30, 40, 30]);
-  if (!diceTurn()) SFX.farkle();                 // with the app's dice it already played when they landed
+  const who = state.players[state.current];
+  if (!diceTurn()) { SFX.farkle(); talk(t >= 500 ? 'farkleBig' : 'farkle', who, { delay: 1500 }); }   // dice mode talks when they land
   nextPlayer(); commit();
-  if (state.over) setTimeout(SFX.win, 500);
+  if (state.over) { setTimeout(SFX.win, 500); talkWinner(); }
 }
 function doUndo() {
   const s = state.undo.pop();
@@ -484,7 +496,7 @@ function rollDice(flick) {
     state.turn.push({ label: 'Kept', pts: sel.pts, faces: sel.faces });
     R.dice = R.dice.filter(d => !d.sel);
     ui.bump = true;
-    if (!R.dice.length) { R.dice = newRoll().dice; toast('🔥 Hot dice! Rolling all 6', 'good'); SFX.hot(); confetti(); }
+    if (!R.dice.length) { R.dice = newRoll().dice; toast('🔥 Hot dice! Rolling all 6', 'good'); SFX.hot(); confetti(); talk('hot', curPlayer(), { delay: 800 }); }
   }
   R.dice.forEach(d => { d.f = rnd6(); d.sel = false; });   // result is decided now; the animation just reveals it
   R.farkle = !hasScore(R.dice.map(d => d.f));
@@ -496,7 +508,10 @@ function settleRoll() {
   const R = state.roll;
   R.phase = R.farkle ? 'farkle' : 'rolled';
   commit();
-  if (R.farkle) { const t = app.querySelector('.table'); t && t.classList.add('shake'); buzz([30, 40, 30]); SFX.farkle(); }
+  if (R.farkle) {
+    const t = app.querySelector('.table'); t && t.classList.add('shake'); buzz([30, 40, 30]); SFX.farkle();
+    talk(turnTotal() >= 500 ? 'farkleBig' : 'farkle', curPlayer(), { delay: 1700 });
+  }
 }
 function toggleHold(i) {
   const before = rollSel(), d = state.roll.dice[i];
@@ -1149,6 +1164,110 @@ function aiThrow(level) {
     vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed, curl: (Math.random() - .5) * .6 });
 }
 
+/* ---------- AI trash talk ---------- */
+// Lines by situation. self_* = the AI talking about its own move; vs_* = an AI reacting to someone
+// else. {name} = whoever just moved, {target} = a (preferably human) opponent to pick on.
+const LINES = {
+  start: ["Prepare to lose.", "Oh good. Fresh victims.", "Let's make this quick. I have places to be.",
+    "I hope nobody here is a sore loser. Especially you, {target}.", "Dice are warm. You're not ready.",
+    "Good luck, {target}. You're going to need all of it."],
+  self_bankBig: ["Beat that.", "Read it and weep.", "And that's how it's done.", "Take notes, {target}.", "Too easy.",
+    "I'd say good luck, but you'd need a miracle.", "Call me the dice whisperer.", "Put that on my tab. My very large tab.",
+    "Was that a lot of points? Oh, it was? Cool."],
+  self_bankSmall: ["A win's a win.", "Slow and steady, baby.", "Don't judge me.", "I'm pacing myself.",
+    "Points are points.", "Banking. Mind your business.", "Tiny, but mine."],
+  self_lead: ["Look who's on top.", "Get used to this view.", "First place. Where I belong.",
+    "Somebody check on {target}. They look worried.", "Scoreboard, {target}. Look at it."],
+  self_farkleBig: ["That didn't happen.", "The dice are rigged.", "I meant to do that.", "Nobody saw that. Right?",
+    "I demand a recount.", "This app is broken. Who coded this?", "Rude.", "I'm not mad. I'm just disappointed in the dice."],
+  self_farkle: ["Warming up.", "Just testing the dice.", "Whatever.", "Next.", "That was a practice roll."],
+  vs_farkleBig: ["Nice try.", "All those points. Gone. Beautiful.", "Should've banked, {name}.",
+    "Greed is a terrible look on you, {name}.", "Ha! Oh, that's rough.", "Pain. Delicious pain.",
+    "{name} just threw a lot of points in the trash.", "I felt that one. Just kidding, I loved it.",
+    "And that's why you bank, {name}."],
+  vs_farkle: ["Oof.", "Couldn't even get started, huh?", "The dice hate you, {name}.", "Zero. Classic {name}.",
+    "Wow. Nothing. Impressive.", "Tough break. Not really.", "Did you even shake them?"],
+  vs_bankBig: ["Lucky.", "Enjoy it while it lasts.", "Even a broken clock is right twice a day, {name}.",
+    "Fine. That was decent. Don't let it go to your head.", "Beginner's luck, round two.",
+    "I've seen better. From a toddler. But still.", "Okay, {name}. Okay. I see you."],
+  vs_bankSmall: ["Wow. Living dangerously.", "Scared much?", "That's it? That's the whole turn?",
+    "Bold strategy, {name}. Tiny, but bold.", "Baby steps, {name}. Baby steps.", "My grandma rolls harder than that."],
+  vs_lead: ["Don't get comfortable, {name}.", "First place looks weird on you.", "Enjoy the view. It's temporary."],
+  self_hot: ["Hot dice, baby!", "Too hot to handle.", "Did somebody order fire?", "Six more? Don't mind if I do."],
+  vs_hot: ["Beginner's luck.", "Oh, so now the dice like you?", "Calm down. It's not a big deal.", "Show-off."],
+  self_final: ["Catch me if you can.", "Final round. Try not to choke.", "One turn each. Make it count. It won't."],
+  vs_final: ["Oh, now it's personal.", "Don't celebrate yet, {name}.", "You've awakened something."],
+  self_win: ["GG. Well, G for me.", "Was there ever any doubt?", "Winner winner. Not you.",
+    "Thanks for playing. Try again sometime. Or don't.", "I'd like to thank the dice. And your bad decisions."],
+  vs_win: ["Rematch. Now.", "I let you win.", "Congrats, I guess.", "Enjoy it. It won't happen again.", "Lag. That was lag."],
+  sample: ["Oh, you're going to regret turning me on.", "Finally, someone to humiliate.", "Testing, testing. You're going down."],
+};
+const TALK_CHANCE = { start: 1, self_bankBig: .9, self_bankSmall: .45, self_lead: .7, self_farkleBig: .9, self_farkle: .55,
+  vs_farkleBig: .95, vs_farkle: .55, vs_bankBig: .8, vs_bankSmall: .7, vs_lead: .7, self_hot: .9, vs_hot: .9,
+  self_final: 1, vs_final: 1, self_win: 1, vs_win: 1 };
+const talkBags = {};
+function pickLine(key) {                           // shuffle-bag, so lines don't repeat back to back
+  if (!talkBags[key] || !talkBags[key].length) talkBags[key] = LINES[key].map((_, i) => i).sort(() => Math.random() - .5);
+  return LINES[key][talkBags[key].pop()];
+}
+// ev: start, bankBig, bankSmall, lead, farkleBig, farkle, hot, final, win. actor: the player who did it.
+function talk(ev, actor, { delay = 400, force = false } = {}) {
+  if (state.talk === 'off') return;
+  const bots = state.players.filter(p => p.ai);
+  if (!bots.length) return;
+  const key = ev === 'start' ? 'start' : (actor && actor.ai ? 'self_' : 'vs_') + ev;
+  if (!LINES[key]) return;
+  const now = Date.now();
+  if (!force && (now - (ui.lastTalk || 0) < 3500 || Math.random() > (TALK_CHANCE[key] ?? .7))) return;
+  ui.lastTalk = now;
+  const speaker = actor && actor.ai && ev !== 'start' ? actor : bots.filter(b => b !== actor)[Math.floor(Math.random() * bots.filter(b => b !== actor).length)] || bots[0];
+  const humans = state.players.filter(p => !p.ai && p !== speaker), others = state.players.filter(p => p !== speaker);
+  const target = (humans.length ? humans : others)[Math.floor(Math.random() * (humans.length || others.length))];
+  const line = pickLine(key).replaceAll('{name}', actor ? actor.name : '').replaceAll('{target}', target ? target.name : 'you');
+  setTimeout(() => say(speaker, line), delay);
+}
+function say(speaker, line) {
+  document.querySelectorAll('.bubble').forEach(b => b.remove());
+  const b = document.createElement('div'), strip = app.querySelector('.strip');
+  b.className = 'bubble';
+  b.innerHTML = `<b>🤖 ${esc(speaker.name)}</b>${esc(line)}`;
+  b.style.top = ((strip ? strip.getBoundingClientRect().bottom : 110) + 12) + 'px';
+  document.body.appendChild(b);
+  const card = strip && strip.querySelectorAll('.pc')[state.players.indexOf(speaker)];
+  if (card) {                                       // point the bubble's tail at the speaker's card
+    const c = card.getBoundingClientRect(), r = b.getBoundingClientRect();
+    b.style.setProperty('--tail', clamp(c.left + c.width / 2 - (innerWidth - r.width) / 2, 20, r.width - 20) + 'px');
+  }
+  setTimeout(() => b.remove(), 3700);
+  if (state.talk !== 'voice' || !state.sound || !('speechSynthesis' in window)) return;
+  try {
+    const u = new SpeechSynthesisUtterance(line), v = voiceFor(speaker);
+    if (v.voice) u.voice = v.voice;
+    u.pitch = v.pitch; u.rate = v.rate; u.volume = 1;
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+function voiceFor(player) {                        // a stable, distinct voice per bot
+  let h = 0;
+  for (const ch of player.name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  let voices = [];
+  try { voices = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang)); } catch (e) {}
+  const local = voices.filter(v => v.localService);
+  const pool = local.length ? local : voices;
+  const base = { easy: 1.3, medium: 1.05, hard: .8 }[player.ai] || 1;
+  return { voice: pool.length ? pool[h % pool.length] : null, pitch: base + ((h >> 3) % 5 - 2) * .05, rate: 1.05 + ((h >> 6) % 3) * .05 };
+}
+let speechUnlocked = false;
+function unlockSpeech() {                          // iOS only lets speech start from a tap
+  if (speechUnlocked || state.talk !== 'voice' || !('speechSynthesis' in window)) return;
+  try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); speechUnlocked = true; } catch (e) {}
+}
+function talkWinner() {
+  const top = Math.max(...state.players.map(p => p.score));
+  talk('win', state.players.find(p => p.score === top), { force: true, delay: 1700 });
+}
+
 /* ---------- Confetti ---------- */
 // Two party-popper bursts from the bottom corners, drawn on a canvas that ignores touches.
 function confetti() {
@@ -1259,6 +1378,13 @@ function setupView() {
         <div class="opt-hint">${state.sound && state.soundAlways
           ? 'Plays even when your phone is on silent. Music from other apps may pause while you play.'
           : state.sound ? 'Follows your ring/silent switch. Pick Always to hear it on silent (e.g. with headphones).' : ''}</div>
+      </div>
+      <div class="opt">
+        <div class="opt-l">AI trash talk</div>
+        <div class="seg">${['off', 'text', 'voice'].map(v =>
+          `<button class="${state.talk === v ? 'on' : ''}" data-a="talk" data-v="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}</div>
+        <div class="opt-hint">${state.talk === 'voice' ? `AI players heckle out loud with your phone's built-in voices${state.sound ? '' : ' (turn Sound effects on to hear them)'}.`
+          : state.talk === 'text' ? 'AI players heckle in speech bubbles.' : ''}</div>
       </div>
       <div class="opt">
         <div class="opt-l">Winning score</div>
@@ -1519,6 +1645,15 @@ app.addEventListener('click', e => {
     case 'bank': bank(); break;
     case 'roll': unlockAudio(); rollDice(null); break;
     case 'mode': setMode(b.dataset.v); break;
+    case 'talk': {
+      state.talk = b.dataset.v;
+      commit();
+      if (state.talk !== 'off') {                   // a sample line, so you know it works
+        unlockSpeech();
+        say({ name: 'Trash-talk bot', ai: 'hard' }, pickLine('sample'));
+      }
+      break;
+    }
     case 'sound':
       state.sound = b.dataset.v !== 'off'; state.soundAlways = b.dataset.v === 'always';
       unlockAudio(); SFX.pick(true); commit(); break;
@@ -1591,7 +1726,7 @@ window.addEventListener('pointerup', e => {
   if (f.speed > 300) rollDice({ x: e.clientX - p.r.left, y: e.clientY - p.r.top, vx: f.vx, vy: f.vy, curl: f.curl });
 });
 window.addEventListener('pointercancel', () => { ptr = null; });
-['pointerdown', 'touchend', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, true));
+['pointerdown', 'touchend', 'click'].forEach(ev => document.addEventListener(ev, () => { unlockAudio(); unlockSpeech(); }, true));
 window.addEventListener('resize', () => { if (state.screen === 'game' && diceTurn()) mountTable(); });
 
 render();
