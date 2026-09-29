@@ -270,7 +270,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 21;   // bump together with CACHE in sw.js
+const APP_VERSION = 23;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -614,20 +614,28 @@ function mountTable() {
 function throwDice(fl) {
   sizeTable();
   const n = state.roll.dice.length, { W, H, S } = TABLE;
+  // The flick shapes the throw: its direction aims it, its speed sets how hard (and so how high,
+  // how much spin and how much scatter), and a curving finger puts sideways spin on the dice.
+  // The Roll button makes a medium throw straight up the table.
   let ox = fl ? fl.x : W / 2 + (rnd() - .5) * W * .3, oy = fl ? fl.y : H - S;
-  let vx = fl ? fl.vx : (rnd() - .5) * 700, vy = fl ? fl.vy : -(1500 + rnd() * 700);
-  const sp = Math.hypot(vx, vy) || 1, target = clamp(sp * 1.1, 1300, 3400);
-  vx *= target / sp; vy *= target / sp;
+  const speed = fl ? clamp(Math.hypot(fl.vx, fl.vy), 350, 4200) : 1500 + rnd() * 700;
+  const dir = fl ? Math.atan2(fl.vy, fl.vx) : -Math.PI / 2 + (rnd() - .5) * .5;
+  const power = clamp((speed - 350) / 3850, 0, 1);          // 0 = gentle roll … 1 = hard throw
+  const curl = fl ? fl.curl || 0 : 0;
   ox = clamp(ox, S, W - S); oy = clamp(oy, S, H - S * .6);
   const unit = () => { const v = [rnd() - .5, rnd() - .5, rnd() - .5], l = Math.hypot(...v) || 1; return v.map(c => c / l); };
   const sims = state.roll.dice.map((d, i) => {
-    const q = unit(), w = unit(), wm = 12 + rnd() * 14;
+    const q = unit(), w = unit(), wm = (5 + power * 24) * (.7 + rnd() * .6);
+    const a = dir + (rnd() - .5) * (.45 - power * .25) + curl * .15;         // aim, a little looser on soft rolls
+    const s = speed * (1 + (rnd() - .5) * (.2 + power * .35));               // harder throws scatter more
+    const spread = S * (.4 + power * .35);
     return {
-      x: clamp(ox + (i - (n - 1) / 2) * S * .55 + (rnd() - .5) * S * .4, S * .72, W - S * .72),
+      x: clamp(ox + (i - (n - 1) / 2) * spread + (rnd() - .5) * S * .4, S * .72, W - S * .72),
       y: clamp(oy + (rnd() - .5) * S * .6, S * .72, H - S * .72),
-      z: 20 + rnd() * 30, vz: 250 + rnd() * 450,
-      vx: vx * (.8 + rnd() * .4) + (rnd() - .5) * 300, vy: vy * (.8 + rnd() * .4) + (rnd() - .5) * 200,
-      va: (rnd() - .5) * 16, w: w.map(c => c * wm), R: axisAngle(q[0], q[1], q[2], rnd() * 6.283),
+      z: 8 + power * 35, vz: (110 + power * 650) * (.75 + rnd() * .5),       // soft flicks barely hop
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      va: curl * 9 * (.7 + rnd() * .6) + (rnd() - .5) * (3 + power * 12),
+      w: w.map(c => c * wm), R: axisAngle(q[0], q[1], q[2], rnd() * 6.283),
       labels: BASE.slice(), done: false, lc: -1,
     };
   });
@@ -742,7 +750,37 @@ function draw() {
 }
 
 /* ---------- Sound (synthesized with Web Audio: no files, works offline) ---------- */
-let actx = null, master = null, verb = null, noiseBuf = null;
+let actx = null, master = null, verb = null, room = null, noiseBuf = null;
+// Generated reverb impulse: pre-delay, a few early reflections, then a noise tail that
+// darkens as it decays (like a real space absorbing highs). Slightly different per ear.
+function makeIR(seconds, decay, preDelay, damp) {
+  const sr = actx.sampleRate, len = Math.floor(sr * seconds), pd = Math.floor(sr * preDelay);
+  const ir = actx.createBuffer(2, len, sr);
+  for (let c = 0; c < 2; c++) {
+    const ch = ir.getChannelData(c);
+    let lp = 0;
+    for (let i = pd; i < len; i++) {
+      const t = (i - pd) / (len - pd);
+      lp += (Math.random() * 2 - 1 - lp) * Math.max(.04, .9 - damp * t);
+      ch[i] = lp * Math.pow(1 - t, decay);
+    }
+    for (const [ms, g] of [[9, .6], [14, .45], [21, .35], [29, .28], [38, .22], [52, .16]]) {
+      const j = pd + Math.floor(sr * ms / 1000 * (c ? 1.09 : 1));
+      if (j < len) ch[j] += g * (Math.random() < .5 ? -1 : 1);
+    }
+  }
+  return ir;
+}
+function reverbBus(ir, level) {
+  const conv = actx.createConvolver(), g = actx.createGain();
+  conv.buffer = ir; g.gain.value = level;
+  g.connect(conv).connect(master);
+  return g;
+}
+function sendTo(node, hall, rm) {                 // feed a sound into the hall and/or room reverb
+  if (hall) { const s = actx.createGain(); s.gain.value = hall; node.connect(s); s.connect(verb); }
+  if (rm) { const s = actx.createGain(); s.gain.value = rm; node.connect(s); s.connect(room); }
+}
 function unlockAudio() {
   if (!state.sound) return;
   try {
@@ -756,12 +794,8 @@ function unlockAudio() {
       comp.threshold.value = -14; comp.ratio.value = 4;
       master = actx.createGain(); master.gain.value = .8;
       master.connect(comp).connect(actx.destination);
-      // small generated room reverb for bells and chimes
-      const len = Math.floor(actx.sampleRate * 1.6), ir = actx.createBuffer(2, len, actx.sampleRate);
-      for (let c = 0; c < 2; c++) { const ch = ir.getChannelData(c); for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2); }
-      const conv = actx.createConvolver(); conv.buffer = ir;
-      verb = actx.createGain(); verb.gain.value = .35;
-      verb.connect(conv).connect(master);
+      verb = reverbBus(makeIR(2.6, 2.6, .022, .8), .45);    // hall: impacts, bells, chimes
+      room = reverbBus(makeIR(.55, 3, .004, .55), .32);     // room: gives the dice and clicks some space
     }
     // iOS leaves audio 'interrupted' (not just 'suspended') after switching apps or locking the phone
     if (actx.state !== 'running') { const p = actx.resume(); if (p && p.catch) p.catch(() => {}); }
@@ -778,15 +812,15 @@ function envGain(T, a, peak, d) {
   g.connect(master);
   return g;
 }
-function tone(f, { t = 0, type = 'sine', a = .004, d = .25, v = .25, to = 0, send = 0 } = {}) {
+function tone(f, { t = 0, type = 'sine', a = .004, d = .25, v = .25, to = 0, send = 0, rm = 0 } = {}) {
   const T = actx.currentTime + t, o = actx.createOscillator(), g = envGain(T, a, v, d);
   o.type = type; o.frequency.setValueAtTime(f, T);
   if (to) o.frequency.exponentialRampToValueAtTime(to, T + a + d);
   o.connect(g);
-  if (send) { const sg = actx.createGain(); sg.gain.value = send; g.connect(sg); sg.connect(verb); }
+  sendTo(g, send, rm);
   o.start(T); o.stop(T + a + d + .05);
 }
-function burst({ t = 0, a = .002, d = .05, v = .3, type = 'bandpass', f = 2000, q = 1, to = 0, send = 0 } = {}) {
+function burst({ t = 0, a = .002, d = .05, v = .3, type = 'bandpass', f = 2000, q = 1, to = 0, send = 0, rm = 0 } = {}) {
   if (!noiseBuf) {
     noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
     const ch = noiseBuf.getChannelData(0);
@@ -797,7 +831,7 @@ function burst({ t = 0, a = .002, d = .05, v = .3, type = 'bandpass', f = 2000, 
   fl.type = type; fl.frequency.setValueAtTime(f, T); fl.Q.value = q;
   if (to) fl.frequency.exponentialRampToValueAtTime(to, T + d);
   src.connect(fl).connect(g);
-  if (send) { const sg = actx.createGain(); sg.gain.value = send; g.connect(sg); sg.connect(verb); }
+  sendTo(g, send, rm);
   src.start(T, Math.random() * .5); src.stop(T + a + d + .05);
 }
 let satCurveCache = null;
@@ -817,7 +851,7 @@ const SFX = {
   hit(v, k) {                                       // k: 'felt' landing, 'wall' rim, 'die' dice-on-dice
     if (!audioOn() || v < .04) return;
     v = Math.min(1, v);
-    if (k === 'felt') { burst({ d: .07, v: v * .5, type: 'lowpass', f: rand(500, 800) }); tone(rand(150, 190), { d: .06, v: v * .25, to: 90 }); }
+    if (k === 'felt') { burst({ d: .07, v: v * .5, type: 'lowpass', f: rand(500, 800), rm: .35 }); tone(rand(150, 190), { d: .06, v: v * .25, to: 90, rm: .25 }); }
     else if (k === 'wall') SFX.knock(v, 0, rand(1500, 2100), rand(170, 210), .05);
     else SFX.knock(v, 0, rand(2300, 3300), rand(240, 300), .03);
   },
@@ -825,14 +859,14 @@ const SFX = {
   knock(v, t, clackF, bodyF, bodyD) {
     const hitOnce = (t, v) => {
       burst({ t, a: .0005, d: .005, v: v * .45, type: 'highpass', f: 4000 });         // snap
-      burst({ t, a: .0005, d: .018, v: v * .55, f: clackF * 1.25, q: 2 });            // clack
+      burst({ t, a: .0005, d: .018, v: v * .55, f: clackF * 1.25, q: 2, rm: .3 });   // clack
       const p = rand(4200, 5200);                                                      // dense cluster of short, inharmonic
       [[1, .018, .1], [1.47, .012, .07], [2.09, .008, .05]].forEach(([m, d, a]) =>    // partials: hard resin, not wood
         tone(p * m, { t, a: .0005, d, v: v * a }));
     };
     hitOnce(t, v);
     hitOnce(t + rand(.003, .007), v * .35);                                            // tiny bounce chatter
-    tone(bodyF * .7, { t, a: .001, d: bodyD * .6, v: v * .3, to: bodyF * .35 });      // weight
+    tone(bodyF * .7, { t, a: .001, d: bodyD * .6, v: v * .3, to: bodyF * .35, rm: .25 }); // weight
     burst({ t, a: .001, d: bodyD * .7, v: v * .25, type: 'lowpass', f: 350 });        // thump
   },
   rattle() {                                        // dice shaken in a hand: tight clusters of knocks
@@ -847,7 +881,7 @@ const SFX = {
   },
   pick(on) {
     if (!audioOn()) return;
-    burst({ a: .0008, d: .035, v: on ? .22 : .17, f: on ? rand(2500, 2900) : rand(1600, 1900), q: 1.4 });   // a plain click
+    burst({ a: .0008, d: .035, v: on ? .22 : .17, f: on ? rand(2500, 2900) : rand(1600, 1900), q: 1.4, rm: .35 });   // a plain click
     tone(on ? 170 : 140, { a: .001, d: .045, v: .2, to: on ? 80 : 65 });                                  // with some weight under it
     burst({ a: .001, d: .03, v: .12, type: 'lowpass', f: 320 });
   },
@@ -860,7 +894,7 @@ const SFX = {
   },
   bank(pts) {
     if (!audioOn()) return;
-    burst({ d: .08, v: .25, type: 'lowpass', f: 300 });
+    burst({ d: .08, v: .25, type: 'lowpass', f: 300, rm: .3 });
     bell(988, 0, .2, .5); bell(1319, .075, .22, 1.1);
     burst({ t: .07, d: .35, v: .06, type: 'highpass', f: 6000 });
     if (pts >= 1000) [1568, 2093, 2637].forEach((f, i) => bell(f, .2 + i * .06, .1, .8));
@@ -871,6 +905,7 @@ const SFX = {
     // through a resonant filter that opens then closes (the "wah"), plus a clean sub underneath.
     const womp = (f1, f2, t, d, vib) => {
       const T = actx.currentTime + t, g = envGain(T, .015, .3, d);
+      sendTo(g, .3, .15);
       const drive = actx.createWaveShaper(), lp = actx.createBiquadFilter();
       drive.curve = satCurve(); drive.oversample = '2x';
       lp.type = 'lowpass'; lp.Q.value = 7;
@@ -904,11 +939,11 @@ const SFX = {
     // slap: built like a clap - a few very fast bright bursts, then a short splatty tail;
     // the low end stays small so it reads as a slap, not a thud
     [[0, 1], [.006, .75], [.014, .55]].forEach(([dt, v]) => {
-      burst({ t: land + dt, a: .0002, d: .011, v: v * .8, f: rand(1600, 2400), q: .7 });
+      burst({ t: land + dt, a: .0002, d: .011, v: v * .8, f: rand(1600, 2400), q: .7, send: 1.1, rm: .5 });
       burst({ t: land + dt, a: .0002, d: .004, v: v * .35, type: 'highpass', f: 3500 });
     });
-    burst({ t: land + .016, a: .001, d: .09, v: .45, f: 1300, q: .5, send: .5 });      // splat tail
-    tone(150, { t: land, a: .001, d: .12, v: .3, to: 60 });                              // a little body
+    burst({ t: land + .016, a: .001, d: .09, v: .45, f: 1300, q: .5, send: 1.2, rm: .4 }); // splat tail
+    tone(150, { t: land, a: .001, d: .12, v: .3, to: 60, send: .5 });                    // a little body
     burst({ t: land, a: .001, d: .08, v: .18, type: 'lowpass', f: 250 });
     womp(196, 185, land + .35, .45);
     womp(147, 98, land + .92, 1.25, true);
@@ -926,8 +961,8 @@ const SFX = {
     chord.forEach(f => tone(f, { t: .5, type: 'triangle', d: 1.6, v: .09, send: .6 }));
     setTimeout(() => SFX.sparkle(2), 450);
   },
-  undo() { if (!audioOn()) return; tone(700, { type: 'triangle', d: .1, v: .12, to: 380 }); },
-  tick() { if (!audioOn()) return; burst({ d: .012, v: .1, f: 4000, q: 2 }); },
+  undo() { if (!audioOn()) return; tone(700, { type: 'triangle', d: .1, v: .12, to: 380, rm: .3 }); },
+  tick() { if (!audioOn()) return; burst({ d: .012, v: .1, f: 4000, q: 2, rm: .25 }); },
 };
 // 0 = singles only, 1 = includes a set, 2 = worth 1,000+
 function tierOf(faces, pts) {
@@ -1255,6 +1290,22 @@ app.addEventListener('keydown', e => {
 });
 
 /* Table gestures: tap a die to keep it, flick to throw. */
+// Release velocity from the last ~80 ms of the finger's path, and "curl": how much the path
+// was curving at release (radians, + = clockwise on screen), used to put spin on the dice.
+function flickFrom(pts) {
+  const last = pts[pts.length - 1];
+  const first = pts.find(q => last.t - q.t < 80) || pts[0];
+  const dt = Math.max(16, last.t - first.t) / 1000;
+  const vx = (last.x - first.x) / dt, vy = (last.y - first.y) / dt;
+  let curl = 0;
+  const win = pts.filter(q => last.t - q.t < 160);
+  if (win.length >= 4) {
+    const mid = win[Math.floor(win.length / 2)];
+    const a1 = Math.atan2(mid.y - win[0].y, mid.x - win[0].x), a2 = Math.atan2(last.y - mid.y, last.x - mid.x);
+    curl = clamp(Math.atan2(Math.sin(a2 - a1), Math.cos(a2 - a1)), -1, 1);
+  }
+  return { vx, vy, speed: Math.hypot(vx, vy), curl };
+}
 let ptr = null;
 app.addEventListener('pointerdown', e => {
   const t = e.target.closest('.table');
@@ -1265,7 +1316,7 @@ app.addEventListener('pointerdown', e => {
 window.addEventListener('pointermove', e => {
   if (!ptr || e.pointerId !== ptr.id) return;
   ptr.pts.push({ x: e.clientX, y: e.clientY, t: e.timeStamp });
-  if (ptr.pts.length > 12) ptr.pts.shift();
+  if (ptr.pts.length > 24) ptr.pts.shift();
 });
 window.addEventListener('pointerup', e => {
   if (!ptr || e.pointerId !== ptr.id) return;
@@ -1279,11 +1330,8 @@ window.addEventListener('pointerup', e => {
     if (best >= 0) toggleHold(best);
     return;
   }
-  const last = { x: e.clientX, y: e.clientY, t: e.timeStamp };
-  const first = p.pts.find(q => last.t - q.t < 100) || p.pts[0];
-  const dt = Math.max(16, last.t - first.t) / 1000;
-  const vx = (last.x - first.x) / dt, vy = (last.y - first.y) / dt;
-  if (Math.hypot(vx, vy) > 450) rollDice({ x: last.x - p.r.left, y: last.y - p.r.top, vx, vy });
+  const f = flickFrom([...p.pts, { x: e.clientX, y: e.clientY, t: e.timeStamp }]);
+  if (f.speed > 300) rollDice({ x: e.clientX - p.r.left, y: e.clientY - p.r.top, vx: f.vx, vy: f.vy, curl: f.curl });
 });
 window.addEventListener('pointercancel', () => { ptr = null; });
 ['pointerdown', 'touchend', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, true));
