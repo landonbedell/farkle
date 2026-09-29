@@ -270,7 +270,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 23;   // bump together with CACHE in sw.js
+const APP_VERSION = 24;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -487,7 +487,8 @@ function toggleHold(i) {
   const after = rollSel();
   const t0 = before && before.valid ? tierOf(before.faces, before.pts) : 0;
   const t1 = after && after.valid ? tierOf(after.faces, after.pts) : 0;
-  if (d.sel && t1 > t0) SFX.sparkle(t1); else SFX.pick(d.sel);
+  SFX.pick(d.sel);
+  if (d.sel && t1 > t0) SFX.ding(t1);
   buzz(6);
   commit();
 }
@@ -885,7 +886,17 @@ const SFX = {
     tone(on ? 170 : 140, { a: .001, d: .045, v: .2, to: on ? 80 : 65 });                                  // with some weight under it
     burst({ a: .001, d: .03, v: .12, type: 'lowpass', f: 320 });
   },
-  sparkle(level) {                                  // 1: a set, 2: 1,000+
+  // A subtle ding layered on top of the keep click. 1: a set, 2: worth 1,000+ (a little more flair).
+  ding(level) {
+    if (!audioOn()) return;
+    const t = .015;                                 // just after the click
+    if (level > 1) {
+      bell(1568, t, .085, .9);
+      bell(2093, t + .075, .08, 1.1);
+      for (let i = 0; i < 4; i++) tone(rand(4000, 6500), { t: t + rand(.1, .35), d: .1, v: .018, send: .9 });
+    } else bell(1760, t, .075, .7);
+  },
+  sparkle(level) {                                  // bigger celebration: hot dice, winning
     if (!audioOn()) return;
     const big = level > 1, notes = big ? [1047, 1319, 1568, 2093, 2637, 3136] : [1319, 1568, 2093, 2637];
     notes.forEach((f, i) => bell(f, i * .055, big ? .16 : .13, big ? 1.4 : .9));
@@ -1234,7 +1245,8 @@ app.addEventListener('click', e => {
     case 'add': {
       const r = RULES.find(r => r.id === b.dataset.id);
       floatFrom(b, '+' + fmt(state.pts[r.id]));
-      if (r.g === 's') SFX.pick(true); else SFX.sparkle(state.pts[r.id] >= 1000 ? 2 : 1);
+      SFX.pick(true);
+      if (r.g !== 's') SFX.ding(state.pts[r.id] >= 1000 ? 2 : 1);
       addScore(r.label, state.pts[r.id], r.faces);
       break;
     }
