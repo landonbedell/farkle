@@ -224,6 +224,17 @@
   .opt { padding: 12px 10px 14px; }
   .opt + .opt { border-top: 1px solid var(--line); }
   .opt-l { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .aichip { flex: none; height: 32px; padding: 0 11px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; }
+  .aichip.on { background: rgba(90,169,244,.16); color: #8cc4ff; }
+  .add-row { display: flex; }
+  .add-row .add-p { flex: 1; }
+  .add-row .add-p.bot { color: #8cc4ff; }
+  .pc-n { display: flex !important; gap: 4px; align-items: baseline; }
+  .pc-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .pc-ai { flex: none; font-size: 11px; font-weight: 700; color: #8cc4ff; }
+  .who-ai { font-size: 12px; font-weight: 700; color: #8cc4ff; background: rgba(90,169,244,.14); padding: 2px 8px; border-radius: 999px; vertical-align: 3px; margin-left: 4px; }
+  .ptype { margin: 6px 0 4px; }
+  .ptype button { font-size: 13px; }
   .opt-hint { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.35; }
   .opt-hint:empty { display: none; }
   .seg { display: flex; background: var(--surface-2); border-radius: 12px; padding: 3px; }
@@ -271,7 +282,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 25;   // bump together with CACHE in sw.js
+const APP_VERSION = 26;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -300,7 +311,7 @@ const newRoll = () => ({ phase: 'ready', farkle: false, dice: Array.from({ lengt
 /* ---------- State ---------- */
 function defaults() {
   return {
-    screen: 'setup', draft: ['', ''], players: [], current: 0, turn: [], round: 1,
+    screen: 'setup', draft: ['', ''], draftAI: [null, null], players: [], current: 0, turn: [], round: 1,
     target: 10000, minOpen: 0, pts: Object.fromEntries(RULES.map(r => [r.id, r.pts])),
     finalBy: null, over: false, undo: [],
     mode: 'buttons', sound: true, soundAlways: false, roll: newRoll(),   // mode: 'buttons' (real dice) | 'roll' (roll in the app)
@@ -349,9 +360,14 @@ function floatFrom(el, text) {
 
 /* ---------- Game actions ---------- */
 function startGame(keepPlayers) {
-  const names = keepPlayers ? state.players.map(p => p.name) : state.draft.map(n => n.trim()).filter(Boolean);
-  if (!names.length) { toast('Add at least one player', 'bad'); return; }
-  Object.assign(state, { players: names.map(name => ({ name, score: 0 })), current: 0, turn: [], round: 1,
+  const src = keepPlayers ? state.players.map(p => ({ name: p.name, ai: p.ai || null }))
+    : state.draft.map((n, i) => ({ name: n.trim(), ai: (state.draftAI || [])[i] || null }));
+  const seen = {};
+  const list = src.map(x => ({ ...x, name: x.name || (x.ai ? `${AI_NAME[x.ai]} Bot` : '') })).filter(x => x.name)
+    .map(x => { seen[x.name] = (seen[x.name] || 0) + 1; return seen[x.name] > 1 ? { ...x, name: `${x.name} ${seen[x.name]}` } : x; });
+  if (!list.length) { toast('Add at least one player', 'bad'); return; }
+  ui.aiPlan = null;
+  Object.assign(state, { players: list.map(({ name, ai }) => ({ name, score: 0, ai })), current: 0, turn: [], round: 1,
     finalBy: null, over: false, undo: [], screen: 'game', roll: newRoll() });
   ui.sim = null;
   commit(); window.scrollTo(0, 0);
@@ -372,7 +388,7 @@ function nextPlayer() {
 }
 function bank() {
   const p = state.players[state.current], R = state.roll, sel = rollSel();
-  if (state.mode === 'roll') {
+  if (diceTurn()) {
     if (R.phase === 'rolling' || R.phase === 'farkle') return;
     if (R.phase === 'rolled' && !sel) { toast('Tap the scoring dice you want to keep', 'bad'); return; }
     if (sel && !sel.valid) { toast('Only keep dice that score', 'bad'); return; }
@@ -398,7 +414,7 @@ function farkle() {
   toast(t ? `Farkle! ${name} loses ${fmt(t)}` : `Farkle! ${name}`, 'bad');
   const fl = document.createElement('div'); fl.className = 'flash'; document.body.appendChild(fl); setTimeout(() => fl.remove(), 650);
   buzz([30, 40, 30]);
-  if (state.mode !== 'roll') SFX.farkle();       // in dice mode it already played when the dice landed
+  if (!diceTurn()) SFX.farkle();                 // with the app's dice it already played when they landed
   nextPlayer(); commit();
   if (state.over) setTimeout(SFX.win, 500);
 }
@@ -446,7 +462,7 @@ function hasScore(faces) {
 }
 function rollSel() {
   const R = state.roll;
-  if (state.mode !== 'roll' || R.phase !== 'rolled') return null;
+  if (!diceTurn() || R.phase !== 'rolled') return null;
   const faces = R.dice.filter(d => d.sel).map(d => d.f).sort((a, b) => a - b);
   if (!faces.length) return null;
   const pts = scoreDice(faces);
@@ -993,6 +1009,146 @@ function tierOf(faces, pts) {
   return pts >= 1000 ? 2 : pts > singles ? 1 : 0;
 }
 
+/* ---------- AI players ---------- */
+// Rule-based opponents (no network needed). They play through the same actions a person uses:
+// throw, tap the dice to keep one by one, then roll again or bank.
+const AI_NAME = { easy: 'Easy', medium: 'Medium', hard: 'Hard' };
+// Hard's brain: the expected final turn score of rolling n dice with T points at stake, playing
+// perfectly from there (keep the best dice, bank or roll on, chase hot dice). Worked out once per
+// set of house rules by enumerating every roll of 1-6 dice.
+let hardCache = null;
+function hardPolicy() {
+  const key = JSON.stringify(state.pts) + '|' + state.minOpen;
+  if (hardCache && hardCache.key === key) return hardCache;
+  const CAP = 4000, FACT = [1, 1, 2, 6, 24, 120, 720];
+  const rolls = [null];                            // rolls[n] = [{ p, opts: [{ kept, pts }] }]
+  for (let n = 1; n <= 6; n++) {
+    const list = [], c = [0, 0, 0, 0, 0, 0, 0];
+    (function each(f, left) {
+      if (f === 6) {
+        c[6] = left;
+        const p = FACT[n] / c.slice(1).reduce((a, k) => a * FACT[k], 1) / 6 ** n;
+        const best = {}, s = [0, 0, 0, 0, 0, 0, 0];
+        (function sub(g) {                           // every way to keep some of these dice
+          if (g > 6) {
+            const faces = [];
+            for (let v = 1; v <= 6; v++) for (let k = 0; k < s[v]; k++) faces.push(v);
+            const pts = faces.length ? scoreDice(faces) : 0;
+            if (pts > 0 && pts > (best[faces.length] || 0)) best[faces.length] = pts;
+            return;
+          }
+          for (let k = 0; k <= c[g]; k++) { s[g] = k; sub(g + 1); }
+        })(1);
+        list.push({ p, opts: Object.entries(best).map(([kept, pts]) => ({ kept: +kept, pts })) });
+        return;
+      }
+      for (let k = 0; k <= left; k++) { c[f] = k; each(f + 1, left - k); }
+    })(1, n);
+    rolls[n] = list;
+  }
+  const memo = new Map();
+  const V = (n, T, onBoard) => {                   // value of standing here: bank if allowed, or roll on
+    const bankOK = onBoard || T >= state.minOpen;
+    if (bankOK && T >= CAP) return T;
+    return Math.max(bankOK ? T : 0, E(n, T, onBoard));
+  };
+  const E = (n, T, onBoard) => {                   // value of rolling n dice now
+    const k = n + '|' + T + '|' + onBoard;
+    if (memo.has(k)) return memo.get(k);
+    let e = 0;
+    for (const r of rolls[n]) {
+      let b = 0;
+      for (const o of r.opts) b = Math.max(b, V(n - o.kept || 6, T + o.pts, onBoard));
+      e += r.p * b;
+    }
+    memo.set(k, e);
+    return e;
+  };
+  return (hardCache = { key, E });
+}
+const curPlayer = () => state.players[state.current] || {};
+const isAITurn = () => state.screen === 'game' && !state.over && !!curPlayer().ai;
+const diceTurn = () => state.mode === 'roll' || !!curPlayer().ai;
+
+function scoringSubsets(dice) {                    // every set of dice that scores on its own
+  const out = [], n = dice.length;
+  for (let m = 1; m < (1 << n); m++) {
+    const idx = [];
+    for (let i = 0; i < n; i++) if (m & (1 << i)) idx.push(i);
+    const pts = scoreDice(idx.map(i => dice[i].f));
+    if (pts > 0) out.push({ idx, pts, left: n - idx.length || 6 });
+  }
+  return out;
+}
+function aiDecide(level) {
+  const p = curPlayer(), T = turnTotal(), opts = scoringSubsets(state.roll.dice);
+  const leader = Math.max(0, ...state.players.filter((_, i) => i !== state.current).map(x => x.score));
+  const finalRound = state.finalBy !== null;
+  const canBank = total => !(p.score === 0 && total < state.minOpen);
+  if (level === 'hard') {                          // bank now vs. the exact expected value of rolling on
+    const pol = hardPolicy(), onBoard = p.score > 0 || !state.minOpen;
+    let best = null;
+    for (const o of opts) {
+      const total = T + o.pts, after = p.score + total;
+      let bankOK = canBank(total);
+      if (finalRound && after <= leader) bankOK = false;          // banking now can't win, so keep going
+      let bankV = bankOK ? total : -Infinity;
+      if (bankOK && (after >= state.target || (finalRound && after > leader))) bankV += 1e6;
+      const rollV = pol.E(o.left, total, onBoard);
+      const v = Math.max(bankV, rollV);
+      if (!best || v > best.v) best = { ...o, v, bank: bankV >= rollV };
+    }
+    return best;
+  }
+  // easy / medium keep every scoring die
+  let pick = opts.reduce((a, o) => (!a || o.pts > a.pts || (o.pts === a.pts && o.idx.length > a.idx.length)) ? o : a, null);
+  if (level === 'easy' && opts.length > 1 && Math.random() < .2) pick = opts[Math.floor(Math.random() * opts.length)];
+  const total = T + pick.pts, after = p.score + total;
+  let bank;
+  if (level === 'medium') {
+    bank = total >= [0, 250, 300, 350, 600, 1000, Infinity][pick.left] * (.85 + Math.random() * .3)
+      || (!finalRound && after >= state.target) || (finalRound && after > leader);
+    if (finalRound && after <= leader) bank = false;
+  } else bank = total >= 300 + Math.random() * 400;             // easy: banks on a whim, ignores dice left
+  if (!canBank(total)) bank = false;
+  return { ...pick, bank };
+}
+function aiSchedule() {
+  if (ui.aiTimer || !isAITurn() || ui.anim || ui.sheet) return;
+  const R = state.roll, think = { easy: 950, medium: 800, hard: 700 }[curPlayer().ai] || 800;
+  if (R.phase === 'rolling') return;
+  const delay = R.phase === 'ready' ? think * .8 : R.phase === 'farkle' ? 1700 : ui.aiPlan ? 340 : think;
+  ui.aiTimer = setTimeout(aiStep, delay + Math.random() * 250);
+}
+function aiStep() {
+  ui.aiTimer = null;
+  if (!isAITurn() || ui.anim || ui.sheet) { ui.aiPlan = null; return; }
+  const R = state.roll, level = curPlayer().ai;
+  if (R.phase === 'ready') { ui.aiPlan = null; aiThrow(level); return; }
+  if (R.phase === 'farkle') { ui.aiPlan = null; farkle(); return; }
+  if (R.phase !== 'rolled') return;
+  const key = state.current + '|' + state.turn.length + '|' + R.dice.map(d => d.f).join('');
+  if (!ui.aiPlan || ui.aiPlan.key !== key) {       // decide, then play it out one tap at a time
+    R.dice.forEach(d => { d.sel = false; });
+    const dec = aiDecide(level);
+    ui.aiPlan = { key, keep: dec.idx.slice(), bank: dec.bank };
+    commit();
+    return;
+  }
+  const next = ui.aiPlan.keep.find(i => !R.dice[i].sel);
+  if (next !== undefined) { toggleHold(next); return; }
+  const plan = ui.aiPlan;
+  ui.aiPlan = null;
+  if (plan.bank) bank(); else aiThrow(level);
+}
+function aiThrow(level) {
+  sizeTable();
+  const [lo, hi] = { easy: [.25, .6], medium: [.3, .7], hard: [.35, .75] }[level] || [.3, .7];
+  const speed = 350 + 3850 * (lo + Math.random() * (hi - lo)), ang = -Math.PI / 2 + (Math.random() - .5) * .7;
+  rollDice({ x: TABLE.W / 2 + (Math.random() - .5) * TABLE.W * .4, y: TABLE.H - TABLE.S * 1.2,
+    vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed, curl: (Math.random() - .5) * .6 });
+}
+
 /* ---------- Confetti ---------- */
 // Two party-popper bursts from the bottom corners, drawn on a canvas that ignores touches.
 function confetti() {
@@ -1057,11 +1213,13 @@ function render() {
     s.scrollTo({ left: on.offsetLeft - (s.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' });
   }
   if (ui.bump) { const t = app.querySelector('.total'); t && t.classList.add('bump'); ui.bump = false; }
-  if (state.screen === 'game' && state.mode === 'roll') mountTable();
+  if (state.screen === 'game' && diceTurn()) mountTable();
   if (state.screen === 'setup') showCacheStatus();
+  aiSchedule();
 }
 
 function setupView() {
+  while (state.draftAI.length < state.draft.length) state.draftAI.push(null);
   const hasGame = state.players.length && !state.over;
   return `
   <div class="wrap">
@@ -1069,13 +1227,17 @@ function setupView() {
 
     <h2>Players</h2>
     <div class="card">
-      ${state.draft.map((n, i) => `
+      ${state.draft.map((n, i) => { const ai = state.draftAI[i]; return `
         <div class="prow">
           <span class="badge">${i + 1}</span>
-          <input data-draft="${i}" value="${esc(n)}" placeholder="Player name" autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="next">
+          <input data-draft="${i}" value="${esc(n)}" placeholder="${ai ? `${AI_NAME[ai]} Bot` : 'Player name'}" autocomplete="off" autocorrect="off" autocapitalize="words" enterkeyhint="next">
+          <button class="aichip ${ai ? 'on' : ''}" data-a="cycleai" data-i="${i}">${ai ? `🤖 ${AI_NAME[ai]}` : 'Human'}</button>
           ${state.draft.length > 1 ? `<button class="icon-btn" data-a="rm" data-i="${i}" aria-label="Remove">${ico.x}</button>` : ''}
-        </div>`).join('')}
-      ${state.draft.length < MAX_PLAYERS ? `<button class="add-p" data-a="addp">${ico.plus} Add player</button>` : ''}
+        </div>`; }).join('')}
+      ${state.draft.length < MAX_PLAYERS ? `<div class="add-row">
+        <button class="add-p" data-a="addp">${ico.plus} Add player</button>
+        <button class="add-p bot" data-a="addbot">🤖 Add AI player</button>
+      </div>` : ''}
     </div>
 
     <h2>Game</h2>
@@ -1143,7 +1305,7 @@ async function showCacheStatus() {
 
 function gameView() {
   const p = state.players[state.current];
-  const rollMode = state.mode === 'roll', R = state.roll, sel = rollSel();
+  const rollMode = diceTurn(), modeRoll = state.mode === 'roll', R = state.roll, sel = rollSel(), bot = isAITurn();
   const t = turnTotal() + (sel && sel.valid ? sel.pts : 0);
   const needOpen = p.score === 0 && state.minOpen > 0 && t < state.minOpen;
   return `
@@ -1151,7 +1313,7 @@ function gameView() {
     <div class="top">
       <div class="brand">${die(5)}Farkle</div>
       <div class="top-meta"><span>Round ${state.round} · to ${fmt(state.target)}</span>
-        <button class="icon-btn" data-a="mode" data-v="${rollMode ? 'buttons' : 'roll'}" aria-label="${rollMode ? 'Use real dice' : 'Roll dice in the app'}">${rollMode ? ico.keypad : die(3)}</button>
+        <button class="icon-btn" data-a="mode" data-v="${modeRoll ? 'buttons' : 'roll'}" aria-label="${modeRoll ? 'Use real dice' : 'Roll dice in the app'}">${modeRoll ? ico.keypad : die(3)}</button>
         <button class="icon-btn" data-a="menu" aria-label="Players and settings">${ico.menu}</button></div>
     </div>
 
@@ -1159,7 +1321,7 @@ function gameView() {
       ${state.players.map((x, i) => `
         <button class="pc press ${i === state.current && !state.over ? 'on' : ''}" data-a="edit" data-i="${i}">
           ${state.finalBy === i ? '<span class="flag">🏁</span>' : ''}
-          <span class="pc-n">${esc(x.name)}</span>
+          <span class="pc-n"><span class="pc-nm">${esc(x.name)}</span>${x.ai ? `<span class="pc-ai">🤖 ${x.ai[0].toUpperCase()}</span>` : ''}</span>
           <span class="pc-s num">${fmt(x.score)}</span>
           <span class="pc-bar"><i style="width:${Math.min(100, x.score / state.target * 100)}%"></i></span>
         </button>`).join('')}
@@ -1182,9 +1344,10 @@ function gameView() {
   <div class="dock"><div class="dock-in">
     <div class="dock-top">
       <div class="who">
-        <div class="who-n">${esc(p.name)}</div>
+        <div class="who-n">${esc(p.name)}${bot ? `<span class="who-ai">🤖 ${AI_NAME[p.ai]} AI</span>` : ''}</div>
         <div class="who-s">${
-          rollMode && R.phase === 'farkle' ? `<span class="warn">No scoring dice${turnTotal() ? ` · loses ${fmt(turnTotal())}` : ''}</span>`
+          bot && R.phase !== 'farkle' ? ({ ready: 'Getting ready to roll…', rolling: 'Rolling…', rolled: ui.aiPlan ? 'Keeping dice…' : 'Thinking…' }[R.phase] || '')
+          : rollMode && R.phase === 'farkle' ? `<span class="warn">No scoring dice${turnTotal() ? ` · loses ${fmt(turnTotal())}` : ''}</span>`
           : sel && !sel.valid ? '<span class="warn">Only keep dice that score</span>'
           : needOpen ? `<span class="warn">Needs ${fmt(state.minOpen)} to get on the board</span>`
           : `Bank → <b class="num">${fmt(p.score + t)}</b>`}</div>
@@ -1198,9 +1361,9 @@ function gameView() {
         : `<span class="hint">${rollMode ? 'Dice you keep show up here' : 'Tap what was scored to add points'}</span>`}
     </div>
     <div class="acts">
-      <button class="undo press" data-a="undo" aria-label="Undo" ${state.undo.length && !(rollMode && R.phase === 'rolling') ? '' : 'disabled'}>${ico.undo}</button>
-      ${rollMode ? rollButton(R, sel) : '<button class="farkle press" data-a="farkle">Farkle</button>'}
-      <button class="bank press" data-a="bank" ${t > 0 && !needOpen && (!rollMode || R.phase === 'ready' || (sel && sel.valid)) ? '' : 'disabled'}>Bank${t ? ` <span class="num">${fmt(t)}</span>` : ''}</button>
+      <button class="undo press" data-a="undo" aria-label="Undo" ${state.undo.length && !bot && !(rollMode && R.phase === 'rolling') ? '' : 'disabled'}>${ico.undo}</button>
+      ${bot ? '<button class="rollbtn" disabled>🤖 Playing</button>' : rollMode ? rollButton(R, sel) : '<button class="farkle press" data-a="farkle">Farkle</button>'}
+      <button class="bank press" data-a="bank" ${!bot && t > 0 && !needOpen && (!rollMode || R.phase === 'ready' || (sel && sel.valid)) ? '' : 'disabled'}>Bank${t ? ` <span class="num">${fmt(t)}</span>` : ''}</button>
     </div>
   </div></div>
 
@@ -1209,7 +1372,8 @@ function gameView() {
 
 function tableView() {
   const R = state.roll;
-  const hint = R.phase === 'ready' ? `<div class="table-hint ready">${ico.up}Flick up to roll</div>`
+  const hint = isAITurn() ? (R.phase === 'farkle' ? '' : `<div class="table-hint"><span>🤖 ${esc(curPlayer().name)} is playing</span></div>`)
+    : R.phase === 'ready' ? `<div class="table-hint ready">${ico.up}Flick up to roll</div>`
     : R.phase === 'rolled' ? `<div class="table-hint"><span>${R.dice.some(d => d.sel) ? 'Flick to roll the rest, or bank' : 'Tap the dice you want to keep'}</span></div>` : '';
   return `
     <div class="table">
@@ -1250,12 +1414,15 @@ function sheetView() {
   const s = ui.sheet;
   if (!s) return '';
   const val = s.value;
-  const title = s.mode === 'custom' ? 'Add custom points' : `Set ${esc(state.players[s.i].name)}'s score`;
+  const title = s.mode === 'custom' ? 'Add custom points' : esc(state.players[s.i].name);
+  const cur = s.mode === 'edit' ? state.players[s.i].ai || '' : '';
   return `
   <div class="scrim" data-a="close"></div>
   <div class="sheet"><div class="sheet-in">
     <div class="grab"></div>
     <div class="sheet-h"><span>${title}</span><button class="icon-btn" data-a="close" aria-label="Close">${ico.x}</button></div>
+    ${s.mode === 'edit' ? `<div class="seg ptype">${['', 'easy', 'medium', 'hard'].map(l =>
+      `<button class="${cur === l ? 'on' : ''}" data-a="setai" data-v="${l}">${l ? `🤖 ${AI_NAME[l]}` : 'Human'}</button>`).join('')}</div>` : ''}
     <div class="kp-disp num ${val ? '' : 'empty'}">${val ? fmt(val) : '0'}</div>
     ${s.mode === 'custom' ? `<div class="quick">${[50, 100, 250, 500].map(v => `<button class="press" data-a="kpadd" data-v="${v}">+${v}</button>`).join('')}</div>` : ''}
     <div class="kp">
@@ -1280,6 +1447,7 @@ function updateSheet() {
 
 /* ---------- Events ---------- */
 function openSheet(mode, i) {
+  clearTimeout(ui.aiTimer); ui.aiTimer = null;       // the AI pauses while a sheet is open
   ui.sheet = { mode, i, value: mode === 'edit' ? String(state.players[i].score || '') : '', fresh: mode === 'edit' };
   render();
 }
@@ -1288,12 +1456,27 @@ app.addEventListener('click', e => {
   const b = e.target.closest('[data-a]');
   if (!b) return;
   const a = b.dataset.a;
+  if (isAITurn() && ['roll', 'bank', 'farkle', 'undo', 'add', 'custom', 'rmchip'].includes(a)) return;   // the AI is playing
   switch (a) {
+    case 'addbot':
+      state.draft.push(''); state.draftAI.push('medium'); commit(); break;
+    case 'cycleai': {
+      const order = [null, 'easy', 'medium', 'hard'], i = +b.dataset.i;
+      state.draftAI[i] = order[(order.indexOf(state.draftAI[i] || null) + 1) % order.length];
+      commit(); break;
+    }
+    case 'setai': {
+      state.players[ui.sheet.i].ai = b.dataset.v || null;
+      ui.aiPlan = null; save();
+      app.querySelectorAll('.ptype button').forEach(x => x.classList.toggle('on', x === b));
+      break;
+    }
     case 'addp':
+      state.draftAI.push(null);
       state.draft.push(''); commit();
       app.querySelector(`[data-draft="${state.draft.length - 1}"]`).focus();
       break;
-    case 'rm': state.draft.splice(+b.dataset.i, 1); commit(); break;
+    case 'rm': state.draft.splice(+b.dataset.i, 1); state.draftAI.splice(+b.dataset.i, 1); commit(); break;
     case 'target': state.target = +b.dataset.v; commit(); break;
     case 'minopen': state.minOpen = +b.dataset.v; commit(); break;
     case 'resetpts': state.pts = Object.fromEntries(RULES.map(r => [r.id, r.pts])); commit(); break;
@@ -1302,7 +1485,7 @@ app.addEventListener('click', e => {
       startGame(false); break;
     case 'resume': state.screen = 'game'; commit(); window.scrollTo(0, 0); break;
     case 'menu':
-      if (state.players.length) state.draft = state.players.map(p => p.name);
+      if (state.players.length) { state.draft = state.players.map(p => p.name); state.draftAI = state.players.map(p => p.ai || null); }
       state.screen = 'setup'; commit(); window.scrollTo(0, 0); break;
     case 'add': {
       const r = RULES.find(r => r.id === b.dataset.id);
@@ -1359,7 +1542,7 @@ app.addEventListener('keydown', e => {
   const next = app.querySelector(`[data-draft="${i + 1}"]`);
   if (next) next.focus();
   else if (state.draft.length < MAX_PLAYERS && e.target.value.trim()) {
-    state.draft.push(''); commit(); app.querySelector(`[data-draft="${i + 1}"]`).focus();
+    state.draft.push(''); state.draftAI.push(null); commit(); app.querySelector(`[data-draft="${i + 1}"]`).focus();
   } else e.target.blur();
 });
 
@@ -1383,7 +1566,7 @@ function flickFrom(pts) {
 let ptr = null;
 app.addEventListener('pointerdown', e => {
   const t = e.target.closest('.table');
-  if (!t) return;
+  if (!t || isAITurn()) return;
   unlockAudio();
   ptr = { id: e.pointerId, r: t.getBoundingClientRect(), x0: e.clientX, y0: e.clientY, t0: e.timeStamp, pts: [{ x: e.clientX, y: e.clientY, t: e.timeStamp }] };
 });
@@ -1409,7 +1592,7 @@ window.addEventListener('pointerup', e => {
 });
 window.addEventListener('pointercancel', () => { ptr = null; });
 ['pointerdown', 'touchend', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, true));
-window.addEventListener('resize', () => { if (state.screen === 'game' && state.mode === 'roll') mountTable(); });
+window.addEventListener('resize', () => { if (state.screen === 'game' && diceTurn()) mountTable(); });
 
 render();
 
