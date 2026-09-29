@@ -172,6 +172,7 @@
     background: var(--surface-3); color: var(--text); padding: 10px 16px; border-radius: 999px; font-weight: 700; font-size: 14px;
     box-shadow: 0 8px 24px rgba(0,0,0,.4); white-space: nowrap; animation: pop 1.6s ease forwards; }
   .toast.bad { background: var(--red); color: #fff; }
+  .confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 45; }
   .toast.good { background: var(--green); color: #052414; }
   @keyframes pop { 0% { opacity: 0; transform: translate(-50%,-8px); } 10%,82% { opacity: 1; transform: translate(-50%,0); } 100% { opacity: 0; } }
 
@@ -270,7 +271,7 @@ const GROUPS = [
   { g: 'k', cols: 3, d: 13, label: true },
   { g: 'c', cols: 2, d: 15, label: true, inline: true },
 ];
-const APP_VERSION = 24;   // bump together with CACHE in sw.js
+const APP_VERSION = 25;   // bump together with CACHE in sw.js
 const KEY = 'farkle-scorekeeper-v1';
 const MAX_PLAYERS = 10;
 const TARGETS = [5000, 10000, 15000];
@@ -467,7 +468,7 @@ function rollDice(flick) {
     state.turn.push({ label: 'Kept', pts: sel.pts, faces: sel.faces });
     R.dice = R.dice.filter(d => !d.sel);
     ui.bump = true;
-    if (!R.dice.length) { R.dice = newRoll().dice; toast('🔥 Hot dice! Rolling all 6', 'good'); SFX.hot(); }
+    if (!R.dice.length) { R.dice = newRoll().dice; toast('🔥 Hot dice! Rolling all 6', 'good'); SFX.hot(); confetti(); }
   }
   R.dice.forEach(d => { d.f = rnd6(); d.sel = false; });   // result is decided now; the animation just reveals it
   R.farkle = !hasScore(R.dice.map(d => d.f));
@@ -805,29 +806,30 @@ function unlockAudio() {
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') unlockAudio(); });
 const audioOn = () => state.sound && actx && actx.state === 'running';
 const rand = (a, b) => a + Math.random() * (b - a);
-function envGain(T, a, peak, d) {
+function envGain(T, a, peak, d, pan = 0) {
   const g = actx.createGain();
   g.gain.setValueAtTime(.0001, T);
   g.gain.linearRampToValueAtTime(peak, T + a);
   g.gain.exponentialRampToValueAtTime(.0001, T + a + d);
-  g.connect(master);
+  if (pan && actx.createStereoPanner) { const p = actx.createStereoPanner(); p.pan.value = pan; g.connect(p).connect(master); }
+  else g.connect(master);
   return g;
 }
-function tone(f, { t = 0, type = 'sine', a = .004, d = .25, v = .25, to = 0, send = 0, rm = 0 } = {}) {
-  const T = actx.currentTime + t, o = actx.createOscillator(), g = envGain(T, a, v, d);
+function tone(f, { t = 0, type = 'sine', a = .004, d = .25, v = .25, to = 0, send = 0, rm = 0, pan = 0 } = {}) {
+  const T = actx.currentTime + t, o = actx.createOscillator(), g = envGain(T, a, v, d, pan);
   o.type = type; o.frequency.setValueAtTime(f, T);
   if (to) o.frequency.exponentialRampToValueAtTime(to, T + a + d);
   o.connect(g);
   sendTo(g, send, rm);
   o.start(T); o.stop(T + a + d + .05);
 }
-function burst({ t = 0, a = .002, d = .05, v = .3, type = 'bandpass', f = 2000, q = 1, to = 0, send = 0, rm = 0 } = {}) {
+function burst({ t = 0, a = .002, d = .05, v = .3, type = 'bandpass', f = 2000, q = 1, to = 0, send = 0, rm = 0, pan = 0 } = {}) {
   if (!noiseBuf) {
     noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
     const ch = noiseBuf.getChannelData(0);
     for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
   }
-  const T = actx.currentTime + t, src = actx.createBufferSource(), fl = actx.createBiquadFilter(), g = envGain(T, a, v, d);
+  const T = actx.currentTime + t, src = actx.createBufferSource(), fl = actx.createBiquadFilter(), g = envGain(T, a, v, d, pan);
   src.buffer = noiseBuf;
   fl.type = type; fl.frequency.setValueAtTime(f, T); fl.Q.value = q;
   if (to) fl.frequency.exponentialRampToValueAtTime(to, T + d);
@@ -959,10 +961,19 @@ const SFX = {
     womp(196, 185, land + .35, .45);
     womp(147, 98, land + .92, 1.25, true);
   },
-  hot() {
+  hot() {                                           // party poppers from both corners, then confetti rustle
     if (!audioOn()) return;
-    burst({ d: .4, v: .12, f: 400, to: 5000, q: 1.5 });
-    setTimeout(() => SFX.sparkle(2), 250);
+    const pop = (t, pan) => {
+      burst({ t, a: .0003, d: .03, v: .55, type: 'highpass', f: 1500, pan, send: .4 });   // snap
+      burst({ t, a: .0005, d: .05, v: .4, f: 800, q: .7, pan, rm: .4 });                 // cardboard "thup"
+      tone(180, { t, a: .001, d: .08, v: .35, to: 70, pan });
+    };
+    pop(0, -.7); pop(.012, .7);
+    burst({ t: .02, a: .05, d: .3, v: .08, f: 400, to: 3000, q: 1.2 });                  // whoosh up
+    setTimeout(() => SFX.sparkle(2), 120);
+    for (let i = 0; i < 16; i++) {                                                        // paper flutter as it falls
+      burst({ t: rand(.2, 1.6), a: .004, d: rand(.02, .05), v: rand(.015, .045), type: 'highpass', f: rand(4500, 8000), pan: rand(-.8, .8) });
+    }
   },
   alert() { if (!audioOn()) return; bell(880, 0, .16, .5); bell(1175, .14, .18, .8); },
   win() {
@@ -980,6 +991,57 @@ function tierOf(faces, pts) {
   if (!(pts > 0)) return 0;
   const singles = faces.reduce((a, f) => a + (f === 1 ? state.pts.one1 : f === 5 ? state.pts.one5 : 0), 0);
   return pts >= 1000 ? 2 : pts > singles ? 1 : 0;
+}
+
+/* ---------- Confetti ---------- */
+// Two party-popper bursts from the bottom corners, drawn on a canvas that ignores touches.
+function confetti() {
+  const reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const W = innerWidth, H = innerHeight, dpr = Math.min(2, window.devicePixelRatio || 1);
+  const cv = document.createElement('canvas');
+  cv.className = 'confetti'; cv.width = W * dpr; cv.height = H * dpr;
+  document.body.appendChild(cv);
+  const ctx = cv.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const colors = ['#f4c35a', '#34c77b', '#ef5b52', '#f6f2e8', '#5aa9f4', '#c77bf4'];
+  const parts = [];
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < (reduced ? 20 : 70); i++) {
+      const ang = (side < 0 ? -Math.PI / 3 : -Math.PI * 2 / 3) + (Math.random() - .5) * .6;
+      const sp = 650 + Math.random() * 750, shape = Math.random();
+      parts.push({
+        x: side < 0 ? -5 : W + 5, y: H * .82, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+        w: shape < .2 ? 4 : 6 + Math.random() * 4, h: shape < .2 ? 16 : shape < .35 ? 6 : 9 + Math.random() * 6,
+        round: shape >= .2 && shape < .35, rot: Math.random() * 6.3, vr: (Math.random() - .5) * 14,
+        tilt: Math.random() * 6.3, vt: 6 + Math.random() * 8, sway: Math.random() * 6.3,
+        color: colors[Math.floor(Math.random() * colors.length)],
+      });
+    }
+  }
+  const t0 = performance.now(), LIFE = 3.2;
+  let last = t0;
+  (function frame(now) {
+    const dt = Math.min(.034, (now - last) / 1000), age = (now - t0) / 1000;
+    last = now;
+    ctx.clearRect(0, 0, W, H);
+    for (const p of parts) {
+      p.vy += 900 * dt;                                   // gravity
+      const drag = Math.exp(-(p.vy > 0 ? 3.2 : 1.6) * dt);  // paper floats once it starts falling
+      p.vx *= drag; p.vy *= drag;
+      p.sway += 3 * dt;
+      p.x += (p.vx + Math.sin(p.sway) * 30) * dt; p.y += p.vy * dt;
+      p.rot += p.vr * dt; p.tilt += p.vt * dt;
+      ctx.save();
+      ctx.globalAlpha = clamp((LIFE - age) / .8, 0, 1);
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      ctx.scale(1, Math.cos(p.tilt));                       // flipping over as it tumbles
+      ctx.fillStyle = p.color;
+      if (p.round) { ctx.beginPath(); ctx.arc(0, 0, p.w / 2, 0, 6.283); ctx.fill(); }
+      else ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+    if (age < LIFE) requestAnimationFrame(frame); else cv.remove();
+  })(t0);
 }
 
 /* ---------- Views ---------- */
